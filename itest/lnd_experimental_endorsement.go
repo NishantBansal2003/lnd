@@ -51,9 +51,10 @@ func testEndorsement(ht *lntest.HarnessTest, aliceEndorse bool) {
 	addResponse := eve.RPC.AddInvoice(req)
 	invoice := eve.RPC.LookupInvoice(addResponse.RHash)
 
+	timeoutDurationInSeconds := int32(wait.PaymentTimeout.Seconds())
 	sendReq := &routerrpc.SendPaymentRequest{
 		PaymentRequest: invoice.PaymentRequest,
-		TimeoutSeconds: int32(wait.PaymentTimeout.Seconds()),
+		TimeoutSeconds: &timeoutDurationInSeconds,
 		FeeLimitMsat:   math.MaxInt64,
 	}
 

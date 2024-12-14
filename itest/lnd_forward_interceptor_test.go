@@ -484,9 +484,10 @@ func testForwardInterceptorWireRecords(ht *lntest.HarnessTest) {
 	customRecords := map[uint64][]byte{
 		65537: []byte("test"),
 	}
+	timeoutDurationInSeconds := int32(wait.PaymentTimeout.Seconds())
 	sendReq := &routerrpc.SendPaymentRequest{
 		PaymentRequest:        invoice.PaymentRequest,
-		TimeoutSeconds:        int32(wait.PaymentTimeout.Seconds()),
+		TimeoutSeconds:        &timeoutDurationInSeconds,
 		FeeLimitMsat:          noFeeLimitMsat,
 		FirstHopCustomRecords: customRecords,
 	}
@@ -594,10 +595,10 @@ func testForwardInterceptorRestart(ht *lntest.HarnessTest) {
 	customRecords := map[uint64][]byte{
 		65537: []byte("test"),
 	}
-
+	timeoutDurationInSeconds := int32(wait.PaymentTimeout.Seconds())
 	sendReq := &routerrpc.SendPaymentRequest{
 		PaymentRequest:        invoice.PaymentRequest,
-		TimeoutSeconds:        int32(wait.PaymentTimeout.Seconds()),
+		TimeoutSeconds:        &timeoutDurationInSeconds,
 		FeeLimitMsat:          noFeeLimitMsat,
 		FirstHopCustomRecords: customRecords,
 	}

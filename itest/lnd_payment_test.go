@@ -83,13 +83,14 @@ func testPaymentSucceededHTLCRemoteSwept(ht *lntest.HarnessTest) {
 	dustInvoice := bob.RPC.AddHoldInvoice(req)
 
 	// Alice now sends both payments to Bob.
+	timeoutDurationInSeconds := int32(3600)
 	payReq := &routerrpc.SendPaymentRequest{
 		PaymentRequest: invoice.PaymentRequest,
-		TimeoutSeconds: 3600,
+		TimeoutSeconds: &timeoutDurationInSeconds,
 	}
 	dustPayReq := &routerrpc.SendPaymentRequest{
 		PaymentRequest: dustInvoice.PaymentRequest,
-		TimeoutSeconds: 3600,
+		TimeoutSeconds: &timeoutDurationInSeconds,
 	}
 
 	// We expect the payment to stay in-flight from both streams.
@@ -248,13 +249,14 @@ func runTestPaymentHTLCTimeout(ht *lntest.HarnessTest, restartAlice bool) {
 	dustInvoice := bob.RPC.AddHoldInvoice(req)
 
 	// Alice now sends both the payments to Bob.
+	timeoutDurationInSeconds := int32(3600)
 	payReq := &routerrpc.SendPaymentRequest{
 		PaymentRequest: invoice.PaymentRequest,
-		TimeoutSeconds: 3600,
+		TimeoutSeconds: &timeoutDurationInSeconds,
 	}
 	dustPayReq := &routerrpc.SendPaymentRequest{
 		PaymentRequest: dustInvoice.PaymentRequest,
-		TimeoutSeconds: 3600,
+		TimeoutSeconds: &timeoutDurationInSeconds,
 	}
 
 	// We expect the payment to stay in-flight from both streams.
@@ -721,9 +723,10 @@ func runAsyncPayments(ht *lntest.HarnessTest, alice, bob *node.HarnessNode,
 	for i := 0; i < numInvoices; i++ {
 		payReq := bobPayReqs[i]
 		go func() {
+			timeoutDurationInSeconds := int32(timeout.Seconds())
 			req := &routerrpc.SendPaymentRequest{
 				PaymentRequest: payReq,
-				TimeoutSeconds: int32(timeout.Seconds()),
+				TimeoutSeconds: &timeoutDurationInSeconds,
 				FeeLimitMsat:   noFeeLimitMsat,
 			}
 			// AssertPaymentStatusWithTimeout will assert that the
@@ -831,9 +834,10 @@ func testBidirectionalAsyncPayments(ht *lntest.HarnessTest) {
 
 	timeout := wait.AsyncBenchmarkTimeout * 2
 	send := func(node *node.HarnessNode, payReq string) {
+		timeoutDurationInSeconds := int32(timeout.Seconds())
 		req := &routerrpc.SendPaymentRequest{
 			PaymentRequest: payReq,
-			TimeoutSeconds: int32(timeout.Seconds()),
+			TimeoutSeconds: &timeoutDurationInSeconds,
 			FeeLimitMsat:   noFeeLimitMsat,
 		}
 		// AssertPaymentStatusWithTimeout will assert that the
@@ -1086,7 +1090,6 @@ func sendPaymentInterceptAndCancel(ht *lntest.HarnessTest,
 	go func() {
 		req := &routerrpc.SendPaymentRequest{
 			PaymentRequest: invoice.PaymentRequest,
-			TimeoutSeconds: 60,
 			FeeLimitSat:    100000,
 			Cancelable:     true,
 		}
