@@ -521,7 +521,10 @@ func SendPaymentRequest(ctx *cli.Context, req *routerrpc.SendPaymentRequest,
 	if pmtTimeout <= 0 {
 		return errors.New("payment timeout must be greater than zero")
 	}
-	req.TimeoutSeconds = int32(pmtTimeout.Seconds())
+	if req.TimeoutSeconds == nil {
+		req.TimeoutSeconds = new(int32)
+	}
+	*req.TimeoutSeconds = int32(pmtTimeout.Seconds())
 
 	req.AllowSelfPayment = ctx.Bool("allow_self_payment")
 

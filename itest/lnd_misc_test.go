@@ -181,7 +181,6 @@ func testSphinxReplayPersistence(ht *lntest.HarnessTest) {
 	// to the above generated invoice.
 	req := &routerrpc.SendPaymentRequest{
 		PaymentRequest: invoiceResp.PaymentRequest,
-		TimeoutSeconds: 60,
 		FeeLimitMsat:   noFeeLimitMsat,
 	}
 	payStream := fred.RPC.SendPayment(req)
@@ -629,7 +628,6 @@ func testRejectHTLC(ht *lntest.HarnessTest) {
 	// lnd with --rejecthtlc.
 	paymentReq := &routerrpc.SendPaymentRequest{
 		PaymentRequest: resp.PaymentRequest,
-		TimeoutSeconds: 60,
 		FeeLimitMsat:   noFeeLimitMsat,
 	}
 	ht.SendPaymentAssertFail(

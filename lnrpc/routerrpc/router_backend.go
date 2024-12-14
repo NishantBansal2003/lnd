@@ -878,11 +878,6 @@ func (r *RouterBackend) extractIntentFromSendRequest(
 		return nil, err
 	}
 
-	// Set payment attempt timeout.
-	if rpcPayReq.TimeoutSeconds == 0 {
-		return nil, errors.New("timeout_seconds must be specified")
-	}
-
 	customRecords := record.CustomSet(rpcPayReq.DestCustomRecords)
 	if err := customRecords.Validate(); err != nil {
 		return nil, err
@@ -913,7 +908,7 @@ func (r *RouterBackend) extractIntentFromSendRequest(
 	}
 
 	payIntent.PayAttemptTimeout = time.Second *
-		time.Duration(rpcPayReq.TimeoutSeconds)
+		time.Duration(*rpcPayReq.TimeoutSeconds)
 
 	// Route hints.
 	routeHints, err := unmarshallRouteHints(

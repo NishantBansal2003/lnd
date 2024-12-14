@@ -41,7 +41,6 @@ func testHoldInvoiceForceClose(ht *lntest.HarnessTest) {
 	// single htlc.
 	req := &routerrpc.SendPaymentRequest{
 		PaymentRequest: bobInvoice.PaymentRequest,
-		TimeoutSeconds: 60,
 		FeeLimitMsat:   noFeeLimitMsat,
 	}
 	ht.SendPaymentAssertInflight(alice, req)

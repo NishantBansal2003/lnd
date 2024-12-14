@@ -72,7 +72,6 @@ func coopCloseWithHTLCs(ht *lntest.HarnessTest) {
 	// HTLC for it.
 	req := &routerrpc.SendPaymentRequest{
 		PaymentRequest: resp.PaymentRequest,
-		TimeoutSeconds: 60,
 		FeeLimitSat:    1000000,
 	}
 	ht.SendPaymentAndAssertStatus(bob, req, lnrpc.Payment_IN_FLIGHT)
@@ -164,7 +163,6 @@ func coopCloseWithHTLCsWithRestart(ht *lntest.HarnessTest) {
 	// for it.
 	req := &routerrpc.SendPaymentRequest{
 		PaymentRequest: resp.PaymentRequest,
-		TimeoutSeconds: 60,
 		FeeLimitSat:    1000000,
 	}
 	ht.SendPaymentAndAssertStatus(bob, req, lnrpc.Payment_IN_FLIGHT)

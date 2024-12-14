@@ -111,7 +111,6 @@ func runChannelForceClosureTest(ht *lntest.HarnessTest,
 			Amt:            int64(paymentAmt),
 			PaymentHash:    ht.Random32Bytes(),
 			FinalCltvDelta: finalCltvDelta,
-			TimeoutSeconds: 60,
 			FeeLimitMsat:   noFeeLimitMsat,
 		}
 		ht.SendPaymentAssertInflight(alice, req)
@@ -795,7 +794,6 @@ func testFailingChannel(ht *lntest.HarnessTest) {
 	// won't work as the channel cannot be found.
 	req := &routerrpc.SendPaymentRequest{
 		PaymentRequest: resp.PaymentRequest,
-		TimeoutSeconds: 60,
 		FeeLimitMsat:   noFeeLimitMsat,
 	}
 	ht.SendPaymentAndAssertStatus(alice, req, lnrpc.Payment_IN_FLIGHT)

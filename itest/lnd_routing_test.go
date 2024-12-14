@@ -902,9 +902,10 @@ func testScidAliasRoutingHints(ht *lntest.HarnessTest) {
 
 	// Now Alice will try to pay to that payment request.
 	timeout := time.Second * 15
+	timeoutDurationInSeconds := int32(timeout.Seconds())
 	stream := ht.Bob.RPC.SendPayment(&routerrpc.SendPaymentRequest{
 		PaymentRequest: payReq,
-		TimeoutSeconds: int32(timeout.Seconds()),
+		TimeoutSeconds: &timeoutDurationInSeconds,
 		FeeLimitSat:    math.MaxInt64,
 	})
 
@@ -926,7 +927,7 @@ func testScidAliasRoutingHints(ht *lntest.HarnessTest) {
 	payReq2 := dave.RPC.AddInvoice(invoice).PaymentRequest
 	stream2 := ht.Bob.RPC.SendPayment(&routerrpc.SendPaymentRequest{
 		PaymentRequest: payReq2,
-		TimeoutSeconds: int32(timeout.Seconds()),
+		TimeoutSeconds: &timeoutDurationInSeconds,
 		FeeLimitSat:    math.MaxInt64,
 	})
 	ht.AssertPaymentStatusFromStream(stream2, lnrpc.Payment_FAILED)
@@ -1476,7 +1477,6 @@ func testRouteFeeCutoff(ht *lntest.HarnessTest) {
 
 		sendReq := &routerrpc.SendPaymentRequest{
 			PaymentRequest: invoiceResp.PaymentRequest,
-			TimeoutSeconds: 60,
 			FeeLimitMsat:   noFeeLimitMsat,
 		}
 		switch limit := feeLimit.Limit.(type) {
@@ -1583,7 +1583,6 @@ func testFeeLimitAfterQueryRoutes(ht *lntest.HarnessTest) {
 	invoiceResp := carol.RPC.AddInvoice(invoice)
 	sendReq := &routerrpc.SendPaymentRequest{
 		PaymentRequest: invoiceResp.PaymentRequest,
-		TimeoutSeconds: 60,
 		FeeLimitMsat:   0,
 	}
 
