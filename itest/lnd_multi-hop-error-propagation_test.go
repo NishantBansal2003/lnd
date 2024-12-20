@@ -132,7 +132,6 @@ func testHtlcErrorPropagation(ht *lntest.HarnessTest) {
 		Dest:           carol.PubKey[:],
 		Amt:            payAmt,
 		FinalCltvDelta: int32(carolPayReq.CltvExpiry),
-		TimeoutSeconds: 60,
 		FeeLimitMsat:   noFeeLimitMsat,
 		MaxParts:       1,
 	}
@@ -201,7 +200,6 @@ func testHtlcErrorPropagation(ht *lntest.HarnessTest) {
 		// 10k satoshis are expected.
 		Amt:            int64(htlcAmt.ToSatoshis()),
 		FinalCltvDelta: int32(carolPayReq.CltvExpiry),
-		TimeoutSeconds: 60,
 		FeeLimitMsat:   noFeeLimitMsat,
 		MaxParts:       1,
 	}
@@ -249,7 +247,6 @@ func testHtlcErrorPropagation(ht *lntest.HarnessTest) {
 
 	req := &routerrpc.SendPaymentRequest{
 		PaymentRequest: carolInvoice2.PaymentRequest,
-		TimeoutSeconds: 60,
 		FeeLimitMsat:   noFeeLimitMsat,
 		MaxParts:       1,
 	}
@@ -285,7 +282,6 @@ func testHtlcErrorPropagation(ht *lntest.HarnessTest) {
 
 	sendReq = &routerrpc.SendPaymentRequest{
 		PaymentRequest: carolInvoice3.PaymentRequest,
-		TimeoutSeconds: 60,
 		FeeLimitMsat:   noFeeLimitMsat,
 		MaxParts:       1,
 	}
@@ -334,7 +330,6 @@ func testHtlcErrorPropagation(ht *lntest.HarnessTest) {
 
 	req = &routerrpc.SendPaymentRequest{
 		PaymentRequest: carolInvoice.PaymentRequest,
-		TimeoutSeconds: 60,
 		FeeLimitMsat:   noFeeLimitMsat,
 		MaxParts:       1,
 	}

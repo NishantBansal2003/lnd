@@ -49,7 +49,6 @@ func testTrackPayments(ht *lntest.HarnessTest) {
 	paymentClient := alice.RPC.SendPayment(
 		&routerrpc.SendPaymentRequest{
 			PaymentRequest: invoice.PaymentRequest,
-			TimeoutSeconds: 60,
 		},
 	)
 
@@ -130,7 +129,6 @@ func testTrackPaymentsCompatible(ht *lntest.HarnessTest) {
 	paymentClient := alice.RPC.SendPayment(
 		&routerrpc.SendPaymentRequest{
 			PaymentRequest: invoice.PaymentRequest,
-			TimeoutSeconds: 60,
 		},
 	)
 

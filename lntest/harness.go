@@ -1519,9 +1519,10 @@ func (h *HarnessTest) completePaymentRequestsAssertStatus(hn *node.HarnessNode,
 
 	// send sends a payment and asserts if it doesn't succeeded.
 	send := func(payReq string) {
+		timeoutDurationInSeconds := int32(wait.PaymentTimeout.Seconds())
 		req := &routerrpc.SendPaymentRequest{
 			PaymentRequest: payReq,
-			TimeoutSeconds: int32(wait.PaymentTimeout.Seconds()),
+			TimeoutSeconds: &timeoutDurationInSeconds,
 			FeeLimitMsat:   noFeeLimitMsat,
 			Amp:            payOpts.useAMP,
 		}
