@@ -21,6 +21,7 @@ import (
 	"github.com/jessevdk/go-flags"
 	"github.com/lightningnetwork/lnd"
 	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing"
 	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/lightningnetwork/lnd/signal"
@@ -50,6 +51,14 @@ var (
 	customDataPattern = regexp.MustCompile(
 		`"custom_channel_data":\s*"([0-9a-f]+)"`,
 	)
+
+	chanIDPattern = regexp.MustCompile(
+		`"chan_id":\s*"(\d+)"`,
+	)
+
+	channelPointPattern = regexp.MustCompile(
+		`"channel_point":\s*"([0-9a-fA-F]+:[0-9]+)"`,
+	)
 )
 
 // replaceCustomData replaces the custom channel data hex string with the
@@ -72,6 +81,96 @@ func replaceCustomData(jsonBytes []byte) []byte {
 
 			return []byte("\"custom_channel_data\":" +
 				string(decoded))
+		},
+	)
+
+	var buf bytes.Buffer
+	err := json.Indent(&buf, replacedBytes, "", "    ")
+	if err != nil {
+		// If we can't indent the JSON, it likely means the replacement
+		// data wasn't correct, so we return the original JSON.
+		return jsonBytes
+	}
+
+	return buf.Bytes()
+}
+
+// appendShortChanIDStr appends the human readable string representation of
+// short_chan_id.
+func appendChanIDStr(jsonBytes []byte) []byte {
+	// If there's nothing to replace, return the original JSON.
+	if !chanIDPattern.Match(jsonBytes) {
+		return jsonBytes
+	}
+
+	replacedBytes := chanIDPattern.ReplaceAllFunc(
+		jsonBytes, func(match []byte) []byte {
+			// Extract the numeric string from the match
+			encoded := chanIDPattern.FindStringSubmatch(
+				string(match),
+			)[1]
+
+			shortChandIDInt, err := strconv.ParseUint(encoded, 10,
+				64)
+			if err != nil {
+				return match
+			}
+
+			// Format a new JSON field for the short_chan_id with
+			// both its numeric representation and its string
+			// representation (short_chan_id_str)
+			updatedField := fmt.Sprintf(`"chan_id": "%s",
+                         "chan_id_str": "%s"`,
+				encoded,
+				lnwire.NewShortChanIDFromInt(shortChandIDInt).
+					String())
+
+			// Replace the entire match with the new structure.
+			return []byte(updatedField)
+		},
+	)
+
+	var buf bytes.Buffer
+	err := json.Indent(&buf, replacedBytes, "", "    ")
+	if err != nil {
+		// If we can't indent the JSON, it likely means the replacement
+		// data wasn't correct, so we return the original JSON.
+		return jsonBytes
+	}
+
+	return buf.Bytes()
+}
+
+// appendFundingOutpointID appends the funding_outpoint_id which is computed
+// using the outpoint of the funding transaction (the txid, and output index).
+func appendFundingOutpointID(jsonBytes []byte) []byte {
+	// If there's nothing to replace, return the original JSON.
+	if !channelPointPattern.Match(jsonBytes) {
+		return jsonBytes
+	}
+
+	replacedBytes := channelPointPattern.ReplaceAllFunc(
+		jsonBytes, func(match []byte) []byte {
+			channelPoint := channelPointPattern.FindStringSubmatch(
+				string(match),
+			)[1]
+
+			channelOutPoint, err := wire.NewOutPointFromString(
+				channelPoint)
+			if err != nil {
+				return match
+			}
+
+			// Format a new JSON field computed from the
+			// channel_point (funding_outpoint_id).
+			updatedField := fmt.Sprintf(`"channel_point": "%s",
+                         "funding_outpoint_id": "%s"`,
+				channelPoint,
+				lnwire.NewChanIDFromOutPoint(*channelOutPoint).
+					String())
+
+			// Replace the entire match with the new structure.
+			return []byte(updatedField)
 		},
 	)
 
@@ -120,7 +219,14 @@ func printRespJSON(resp proto.Message) {
 		return
 	}
 
+	// Replace custom_channel_data.
 	jsonBytesReplaced := replaceCustomData(jsonBytes)
+
+	// Append the funding_outpoint_id field.
+	jsonBytesReplaced = appendFundingOutpointID(jsonBytesReplaced)
+
+	// Append the chan_id_str field.
+	jsonBytesReplaced = appendChanIDStr(jsonBytesReplaced)
 
 	fmt.Printf("%s\n", jsonBytesReplaced)
 }
