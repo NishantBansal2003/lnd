@@ -268,9 +268,9 @@ func TestReplyChannelRangeDecode(t *testing.T) {
 				"0045a6c4",
 			expEncoding: EncodingSortedPlain,
 			expSCIDs: []string{
-				"0:0:142",
-				"0:0:15465",
-				"0:69:42692",
+				"0x0x142",
+				"0x0x15465",
+				"0x69x42692",
 			},
 		},
 		{
@@ -280,9 +280,9 @@ func TestReplyChannelRangeDecode(t *testing.T) {
 				"01789c636000833e08659309a65878be010010a9023a",
 			expEncoding: EncodingSortedZlib,
 			expSCIDs: []string{
-				"0:0:142",
-				"0:0:15465",
-				"0:4:3318",
+				"0x0x142",
+				"0x0x15465",
+				"0x4x3318",
 			},
 		},
 		{
@@ -295,9 +295,9 @@ func TestReplyChannelRangeDecode(t *testing.T) {
 				"000115c000015b300001a0a",
 			expEncoding: EncodingSortedPlain,
 			expSCIDs: []string{
-				"0:0:12355",
-				"0:7:30934",
-				"0:70:57793",
+				"0x0x12355",
+				"0x7x30934",
+				"0x70x57793",
 			},
 			expTimestamps: Timestamps{
 				{
