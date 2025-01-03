@@ -74,6 +74,12 @@
   This is a protocol gadget required for Dynamic Commitments and Splicing that
   will be added later.
 
+* [Added]((https://github.com/lightningnetwork/lnd/pull/9390)) 
+  `chan_id_str`, a string representation of `chan_id` in the format 
+  (`block x transaction x output`), and `funding_outpoint_id` to align with the
+  BOLT-2 Peer Protocol specification for standardized channel identification, 
+  to the `lncli listchannels` output.
+
 ## Functional Enhancements
 * [Add ability](https://github.com/lightningnetwork/lnd/pull/8998) to paginate 
  wallet transactions.
@@ -274,6 +280,7 @@ The underlying functionality between those two options remain the same.
 * hieblmi
 * Jesse de Wit
 * Keagan McClelland
+* Nishant Bansal
 * Oliver Gugger
 * Pins
 * Viktor Tigerström
