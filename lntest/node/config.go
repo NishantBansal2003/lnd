@@ -159,6 +159,9 @@ type BaseNodeConfig struct {
 	// postgresDBName is the name of the postgres database where lnd data
 	// is stored in.
 	postgresDBName string
+
+	// An address to enforce payout of our funds to on cooperative close.
+	CloseAddress string
 }
 
 func (cfg BaseNodeConfig) P2PAddr() string {

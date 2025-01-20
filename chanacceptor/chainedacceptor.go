@@ -3,11 +3,21 @@ package chanacceptor
 import (
 	"sync"
 	"sync/atomic"
+
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/lightningnetwork/lnd/lnwallet/chancloser"
 )
 
 // ChainedAcceptor represents a conjunction of ChannelAcceptor results.
 type ChainedAcceptor struct {
 	acceptorID uint64 // To be used atomically.
+
+	// The upfront shutdown address to use if the initiating peer supports
+	// option upfront shutdown script
+	closeAddress string
+
+	// params are our current chain params.
+	params *chaincfg.Params
 
 	// acceptors is a map of ChannelAcceptors that will be evaluated when
 	// the ChainedAcceptor's Accept method is called.
@@ -19,6 +29,16 @@ type ChainedAcceptor struct {
 func NewChainedAcceptor() *ChainedAcceptor {
 	return &ChainedAcceptor{
 		acceptors: make(map[uint64]ChannelAcceptor),
+	}
+}
+
+// NewChainedAcceptorWithCloseAddr initializes a ChainedAcceptor.
+func NewChainedAcceptorWithOpts(closeAddress string, params *chaincfg.Params,
+) *ChainedAcceptor {
+	return &ChainedAcceptor{
+		acceptors:    make(map[uint64]ChannelAcceptor),
+		closeAddress: closeAddress,
+		params:       params,
 	}
 }
 
@@ -95,6 +115,23 @@ func (c *ChainedAcceptor) Accept(req *ChannelAcceptRequest) *ChannelAcceptRespon
 				0, 0, 0, 0, false,
 			)
 		}
+	}
+
+	if len(finalResp.UpfrontShutdown) == 0 && len(c.closeAddress) != 0 {
+		// Attempt to parse the upfront shutdown address provided.
+		upfront, err := chancloser.ParseUpfrontShutdownAddress(
+			c.closeAddress, c.params,
+		)
+		if err != nil {
+			log.Errorf("Could not parse upfront shutdown for "+
+				"%x: %v", req.OpenChanMsg.PendingChannelID, err)
+
+			return NewChannelAcceptResponse(
+				false, errChannelRejected, nil, 0, 0,
+				0, 0, 0, 0, false,
+			)
+		}
+		finalResp.UpfrontShutdown = upfront
 	}
 
 	// If we have gone through all of our acceptors with no objections, we
