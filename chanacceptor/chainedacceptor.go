@@ -32,9 +32,11 @@ func NewChainedAcceptor() *ChainedAcceptor {
 	}
 }
 
-// NewChainedAcceptorWithCloseAddr initializes a ChainedAcceptor.
-func NewChainedAcceptorWithOpts(closeAddress string, params *chaincfg.Params,
+func NewChainedAcceptorWithOpts(
+	closeAddress string,
+	params *chaincfg.Params,
 ) *ChainedAcceptor {
+
 	return &ChainedAcceptor{
 		acceptors:    make(map[uint64]ChannelAcceptor),
 		closeAddress: closeAddress,
