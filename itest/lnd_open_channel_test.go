@@ -1067,6 +1067,7 @@ func testOpenChannelWithShutdownAddr(ht *lntest.HarnessTest) {
 			&lnrpc.ClosedChannelsRequest{
 				Cooperative: true,
 			})
+
 		if len(closedChannels.Channels) == 0 {
 			return fmt.Errorf("no closed channels found")
 		}
@@ -1074,6 +1075,7 @@ func testOpenChannelWithShutdownAddr(ht *lntest.HarnessTest) {
 			return fmt.Errorf("expected settled balance" +
 				"to be non-zero")
 		}
+
 		return nil
 	}
 
