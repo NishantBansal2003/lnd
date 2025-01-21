@@ -13,7 +13,7 @@ import (
 func TestChainedAcceptorNoOpts(t *testing.T) {
 	t.Parallel()
 
-	// Create the zero-conf acceptor.
+	// Create the chained acceptor.
 	chainedAcceptor := NewChainedAcceptor()
 
 	// Assert that calling Accept return nil UpfrontShutdown.
@@ -45,7 +45,7 @@ func TestChainedAcceptorNoOpts(t *testing.T) {
 func TestChainedAcceptorWithOpts(t *testing.T) {
 	t.Parallel()
 
-	// Create the zero-conf acceptor.
+	// Create the chained acceptor.
 	chainedAcceptor := NewChainedAcceptorWithOpts(testValidAddr,
 		&chaincfg.RegressionNetParams)
 

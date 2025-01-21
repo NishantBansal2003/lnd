@@ -27,7 +27,7 @@ func NewZeroConfAcceptorWithOpts(
 	closeAddress string,
 	params *chaincfg.Params,
 ) *ZeroConfAcceptor {
-	
+
 	return &ZeroConfAcceptor{
 		chainedAcceptor: NewChainedAcceptorWithOpts(closeAddress,
 			params),
