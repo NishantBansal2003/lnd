@@ -21,8 +21,11 @@ func NewZeroConfAcceptor() *ZeroConfAcceptor {
 	}
 }
 
-// NewZeroConfAcceptorWithOpts initializes a ZeroConfAcceptor.
-func NewZeroConfAcceptorWithOpts(closeAddress string, params *chaincfg.Params,
+// NewZeroConfAcceptorWithOpts initializes a ZeroConfAcceptor with the given
+// closeAddress and params.
+func NewZeroConfAcceptorWithOpts(
+	closeAddress string,
+	params *chaincfg.Params,
 ) *ZeroConfAcceptor {
 	return &ZeroConfAcceptor{
 		chainedAcceptor: NewChainedAcceptorWithOpts(closeAddress,

@@ -9,7 +9,7 @@ import (
 )
 
 // TestChainedAcceptorNoOpts verifies that the ChainedAcceptor will
-// return nil UpfrontShutdown when not specified
+// return nil UpfrontShutdown when not specified.
 func TestChainedAcceptorNoOpts(t *testing.T) {
 	t.Parallel()
 
@@ -41,7 +41,7 @@ func TestChainedAcceptorNoOpts(t *testing.T) {
 }
 
 // TestChainedAcceptorWithOpts verifies that the ChainedAcceptor will
-// return valid UpfrontShutdown when specified
+// return valid UpfrontShutdown when specified.
 func TestChainedAcceptorWithOpts(t *testing.T) {
 	t.Parallel()
 

@@ -12,8 +12,7 @@ import (
 type ChainedAcceptor struct {
 	acceptorID uint64 // To be used atomically.
 
-	// The upfront shutdown address to use if the initiating peer supports
-	// option upfront shutdown script
+	// An address to enforce payout of our funds to on cooperative close.
 	closeAddress string
 
 	// params are our current chain params.
@@ -32,6 +31,8 @@ func NewChainedAcceptor() *ChainedAcceptor {
 	}
 }
 
+// NewChainedAcceptorWithOpts initializes a ChainedAcceptor with the given
+// closeAddress and params.
 func NewChainedAcceptorWithOpts(
 	closeAddress string,
 	params *chaincfg.Params,
@@ -119,8 +120,8 @@ func (c *ChainedAcceptor) Accept(req *ChannelAcceptRequest) *ChannelAcceptRespon
 		}
 	}
 
+	// Attempt to parse the upfront shutdown address provided.
 	if len(finalResp.UpfrontShutdown) == 0 && len(c.closeAddress) != 0 {
-		// Attempt to parse the upfront shutdown address provided.
 		upfront, err := chancloser.ParseUpfrontShutdownAddress(
 			c.closeAddress, c.params,
 		)
