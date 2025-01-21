@@ -1086,5 +1086,5 @@ func testOpenChannelWithShutdownAddr(ht *lntest.HarnessTest) {
 		return checkSettledBalance(bob)
 	}, defaultTimeout))
 
-	ht.Log("Successfully ran testOpenChannelWithShutdownAddr")
+	fmt.Println("Successfully ran testOpenChannelWithShutdownAddr")
 }
