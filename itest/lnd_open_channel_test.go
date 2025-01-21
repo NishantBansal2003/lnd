@@ -1085,4 +1085,6 @@ func testOpenChannelWithShutdownAddr(ht *lntest.HarnessTest) {
 	require.NoError(ht, wait.NoError(func() error {
 		return checkSettledBalance(bob)
 	}, defaultTimeout))
+
+	ht.Log("Successfully ran testOpenChannelWithShutdownAddr")
 }
