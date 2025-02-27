@@ -3850,9 +3850,21 @@ func (r *rpcServer) fetchPendingOpenChannels() (pendingOpenChannels, error) {
 		commitBaseWeight := blockchain.GetTransactionWeight(utx)
 		commitWeight := commitBaseWeight + witnessWeight
 
+		// For the waitBlocksForFundingConf different values are set
+		// in case we are in a dev environment so enhance test
+		// capabilities.
+		waitBlocksForFundingConf := funding.MaxWaitNumBlocksFundingConf
+
+		// Get the waitBlocksForFundingConf. If we are not in
+		// development mode, this would be nil.
+		if lncfg.IsDevBuild() {
+			waitBlocksForFundingConf = r.cfg.Dev.
+				GetMaxWaitNumBlocksFundingConf()
+		}
+
 		// FundingExpiryBlocks is the distance from the current block
-		// height to the broadcast height + MaxWaitNumBlocksFundingConf.
-		maxFundingHeight := funding.MaxWaitNumBlocksFundingConf +
+		// height to the broadcast height + waitBlocksForFundingConf.
+		maxFundingHeight := uint32(waitBlocksForFundingConf) +
 			pendingChan.BroadcastHeight()
 		fundingExpiryBlocks := int32(maxFundingHeight) - currentHeight
 
