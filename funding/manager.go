@@ -662,6 +662,8 @@ const (
 	// channelReady message has been sent, but we still haven't announced
 	// the channel to the network.
 	addedToGraph
+
+	markedConfirm
 )
 
 func (c channelOpeningState) String() string {
@@ -672,6 +674,8 @@ func (c channelOpeningState) String() string {
 		return "channelReadySent"
 	case addedToGraph:
 		return "addedToGraph"
+	case markedConfirm:
+		return "markedConfirm"
 	default:
 		return "unknown"
 	}
@@ -1335,13 +1339,14 @@ func (f *Manager) handleConfirmation(channel *channeldb.OpenChannel) {
 	// useful to resume the opening process in case of restarts. We set the
 	// opening state before we mark the channel opened in the database,
 	// such that we can receover from one of the db writes failing.
-	// err = f.saveChannelOpeningState(
-	// 	&fundingPoint, markedConfirm, &shortChanID,
-	// )
-	// if err != nil {
-	// 	return fmt.Errorf("error setting channel state to "+
-	// 		"markedConfirm: %v", err)
-	// }
+	err = f.saveChannelOpeningState(
+		&fundingPoint, markedConfirm, &shortChanID,
+	)
+	if err != nil {
+		log.Errorf("error setting channel state to "+
+			"markedConfirm: %v", err)
+		return
+	}
 
 	err = channel.MarkConfirmedScid(shortChanID)
 	if err != nil {
