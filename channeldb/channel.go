@@ -1501,6 +1501,40 @@ func (c *OpenChannel) fullSync(tx kvdb.RwTx) error {
 	return putOpenChannel(chanBucket, c)
 }
 
+// MarkAsConfirmed marks a channel as fully open given a locator that uniquely
+// describes its location within the chain.
+func (c *OpenChannel) MarkAsConfirmed(openLoc lnwire.ShortChannelID) error {
+	c.Lock()
+	defer c.Unlock()
+
+	if err := kvdb.Update(c.Db.backend, func(tx kvdb.RwTx) error {
+		chanBucket, err := fetchChanBucketRw(
+			tx, c.IdentityPub, &c.FundingOutpoint, c.ChainHash,
+		)
+		if err != nil {
+			return err
+		}
+
+		channel, err := fetchOpenChannel(chanBucket, &c.FundingOutpoint)
+		if err != nil {
+			return err
+		}
+
+		channel.IsPending = true
+		channel.ShortChannelID = openLoc
+
+		return putOpenChannel(chanBucket, channel)
+	}, func() {}); err != nil {
+		return err
+	}
+
+	c.IsPending = true
+	c.ShortChannelID = openLoc
+	c.Packager = NewChannelPackager(openLoc)
+
+	return nil
+}
+
 // MarkAsOpen marks a channel as fully open given a locator that uniquely
 // describes its location within the chain.
 func (c *OpenChannel) MarkAsOpen(openLoc lnwire.ShortChannelID) error {

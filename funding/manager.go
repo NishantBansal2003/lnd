@@ -662,6 +662,8 @@ const (
 	// channelReady message has been sent, but we still haven't announced
 	// the channel to the network.
 	addedToGraph
+
+	markedConfirm
 )
 
 func (c channelOpeningState) String() string {
@@ -1280,6 +1282,82 @@ func (f *Manager) stateStep(channel *channeldb.OpenChannel,
 	return fmt.Errorf("undefined channelState: %v", channelState)
 }
 
+func (f *Manager) handleConfirmation(channel *channeldb.OpenChannel) error {
+
+	chanFundingScript, err := makeFundingScript(channel)
+	if err != nil {
+		log.Errorf("unable to create funding script for "+
+			"ChannelPoint(%v): %v",
+			channel.FundingOutpoint, err)
+
+		return err
+	}
+
+	chanConfNtfn, err := f.cfg.Notifier.RegisterConfirmationsNtfn(
+		&channel.FundingOutpoint.Hash, chanFundingScript, 1,
+		channel.BroadcastHeight(),
+	)
+
+	var confDetails *chainntnfs.TxConfirmation
+
+	select {
+	case confchanDetails, ok := <-chanConfNtfn.Confirmed:
+		if !ok {
+			return fmt.Errorf("ChainNotifier shutting "+
+				"down, can't complete funding flow "+
+				"for ChannelPoint(%v)",
+				channel.FundingOutpoint)
+		}
+		confDetails = confchanDetails
+
+	case <-f.quit:
+		return ErrFundingManagerShuttingDown
+	}
+
+	fundingPoint := channel.FundingOutpoint
+	log.Infof("ChannelPoint(%v) is now confirmed: ChannelID(%v)",
+		fundingPoint, lnwire.NewChanIDFromOutPoint(fundingPoint))
+
+	// With the block height and the transaction index known, we can
+	// construct the compact chanID which is used on the network to unique
+	// identify channels.
+	shortChanID := lnwire.ShortChannelID{
+		BlockHeight: confDetails.BlockHeight,
+		TxIndex:     confDetails.TxIndex,
+		TxPosition:  uint16(fundingPoint.Index),
+	}
+
+	// Now that that the channel has been fully confirmed, we'll request
+	// that the wallet fully verify this channel to ensure that it can be
+	// used.
+	err = f.cfg.Wallet.ValidateChannel(channel, confDetails.Tx)
+	if err != nil {
+		return fmt.Errorf("unable to validate channel: %w", err)
+	}
+
+	// The funding transaction now being confirmed, we add this channel to
+	// the fundingManager's internal persistent state machine that we use
+	// to track the remaining process of the channel opening. This is
+	// useful to resume the opening process in case of restarts. We set the
+	// opening state before we mark the channel opened in the database,
+	// such that we can receover from one of the db writes failing.
+	err = f.saveChannelOpeningState(
+		&fundingPoint, markedConfirm, &shortChanID,
+	)
+	if err != nil {
+		return fmt.Errorf("error setting channel state to "+
+			"markedConfirm: %v", err)
+	}
+
+	err = channel.MarkAsConfirmed(shortChanID)
+	if err != nil {
+		return fmt.Errorf("error setting channel pending flag to "+
+			"false:	%v", err)
+	}
+
+	return nil
+}
+
 // advancePendingChannelState waits for a pending channel's funding tx to
 // confirm, and marks it open in the database when that happens.
 func (f *Manager) advancePendingChannelState(channel *channeldb.OpenChannel,
@@ -1336,6 +1414,12 @@ func (f *Manager) advancePendingChannelState(channel *channeldb.OpenChannel,
 		}
 
 		return nil
+	}
+
+	if err := f.handleConfirmation(channel); err != nil {
+		return fmt.Errorf("error waiting for funding "+
+			"confirmation for ChannelPoint(%v): %v",
+			channel.FundingOutpoint, err)
 	}
 
 	confChannel, err := f.waitForFundingWithTimeout(channel)
@@ -3108,6 +3192,8 @@ func (f *Manager) waitForFundingConfirmation(
 	if completeChan.IsZeroConf() {
 		numConfs = 6
 	}
+
+	log.Infof("Logged By Nishant - %v", numConfs)
 
 	confNtfn, err := f.cfg.Notifier.RegisterConfirmationsNtfn(
 		&txid, fundingScript, numConfs,

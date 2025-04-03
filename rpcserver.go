@@ -3919,6 +3919,19 @@ func (r *rpcServer) fetchPendingOpenChannels() (pendingOpenChannels, error) {
 			pendingChan.BroadcastHeight()
 		fundingExpiryBlocks := int32(maxFundingHeight) - currentHeight
 
+		// ConfirmationUntilConfirmed is the number of blocks remaining
+		// until the funding transaction reaches the required
+		// confirmation height. This is calculated as distance from the
+		// current block height to the block height where the funding
+		// transaction is located + required number of confirmations.
+		openTxBlockHeight := int32(
+			pendingChan.ShortChannelID.BlockHeight,
+		)
+
+		confirmationHeight := openTxBlockHeight +
+			int32(pendingChan.NumConfsRequired) - 1
+		remainingConfs := max(0, confirmationHeight-currentHeight)
+
 		customChanBytes, err := encodeCustomChanData(pendingChan)
 		if err != nil {
 			return nil, fmt.Errorf("unable to encode open chan "+
@@ -3940,11 +3953,11 @@ func (r *rpcServer) fetchPendingOpenChannels() (pendingOpenChannels, error) {
 				Memo:                 string(pendingChan.Memo),
 				CustomChannelData:    customChanBytes,
 			},
-			CommitWeight:        commitWeight,
-			CommitFee:           int64(localCommitment.CommitFee),
-			FeePerKw:            int64(localCommitment.FeePerKw),
-			FundingExpiryBlocks: fundingExpiryBlocks,
-			// TODO(roasbeef): need to track confirmation height
+			CommitWeight:               commitWeight,
+			CommitFee:                  int64(localCommitment.CommitFee),
+			FeePerKw:                   int64(localCommitment.FeePerKw),
+			FundingExpiryBlocks:        fundingExpiryBlocks,
+			ConfirmationUntilConfirmed: remainingConfs,
 		}
 	}
 
