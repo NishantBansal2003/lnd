@@ -674,6 +674,8 @@ func (c channelOpeningState) String() string {
 		return "channelReadySent"
 	case addedToGraph:
 		return "addedToGraph"
+	case markedConfirm:
+		return "markedConfirm"
 	default:
 		return "unknown"
 	}
@@ -1327,13 +1329,13 @@ func (f *Manager) handleConfirmation(channel *channeldb.OpenChannel) error {
 		TxPosition:  uint16(fundingPoint.Index),
 	}
 
-	// Now that that the channel has been fully confirmed, we'll request
-	// that the wallet fully verify this channel to ensure that it can be
-	// used.
-	err = f.cfg.Wallet.ValidateChannel(channel, confDetails.Tx)
-	if err != nil {
-		return fmt.Errorf("unable to validate channel: %w", err)
-	}
+	// // Now that that the channel has been fully confirmed, we'll request
+	// // that the wallet fully verify this channel to ensure that it can be
+	// // used.
+	// err = f.cfg.Wallet.ValidateChannel(channel, confDetails.Tx)
+	// if err != nil {
+	// 	return fmt.Errorf("unable to validate channel: %w", err)
+	// }
 
 	// The funding transaction now being confirmed, we add this channel to
 	// the fundingManager's internal persistent state machine that we use
@@ -1349,11 +1351,11 @@ func (f *Manager) handleConfirmation(channel *channeldb.OpenChannel) error {
 			"markedConfirm: %v", err)
 	}
 
-	err = channel.MarkAsConfirmed(shortChanID)
-	if err != nil {
-		return fmt.Errorf("error setting channel pending flag to "+
-			"false:	%v", err)
-	}
+	// err = channel.MarkAsConfirmed(shortChanID)
+	// if err != nil {
+	// 	return fmt.Errorf("error setting channel pending flag to "+
+	// 		"false:	%v", err)
+	// }
 
 	return nil
 }
