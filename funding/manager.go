@@ -3102,8 +3102,10 @@ func (f *Manager) waitForFundingWithTimeout(
 	f.wg.Add(1)
 	go f.waitForFundingConfirmation(ch, cancelChan, confChan)
 
-	f.wg.Add(1)
-	go f.handleConfirmation(ch, cancelChan)
+	if !ch.IsZeroConf() {
+		f.wg.Add(1)
+		go f.handleConfirmation(ch, cancelChan)
+	}
 
 	// If we are not the initiator, we have no money at stake and will
 	// timeout waiting for the funding transaction to confirm after a
