@@ -1355,14 +1355,14 @@ func (f *Manager) handleConfirmation(channel *channeldb.OpenChannel,
 	// useful to resume the opening process in case of restarts. We set the
 	// opening state before we mark the channel opened in the database,
 	// such that we can receover from one of the db writes failing.
-	err = f.saveChannelOpeningState(
-		&fundingPoint, markedConfirm, &shortChanID,
-	)
-	if err != nil {
-		log.Errorf("error setting channel state to "+
-			"markedConfirm: %v", err)
-		return
-	}
+	// err = f.saveChannelOpeningState(
+	// 	&fundingPoint, markedConfirm, &shortChanID,
+	// )
+	// if err != nil {
+	// 	log.Errorf("error setting channel state to "+
+	// 		"markedConfirm: %v", err)
+	// 	return
+	// }
 
 	err = channel.MarkConfirmedScid(shortChanID)
 	if err != nil {
