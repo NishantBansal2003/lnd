@@ -1530,7 +1530,7 @@ func (c *OpenChannel) MarkAsConfirmed(openLoc lnwire.ShortChannelID) error {
 
 	c.IsPending = true
 	c.ShortChannelID = openLoc
-	c.Packager = NewChannelPackager(openLoc)
+	// c.Packager = NewChannelPackager(openLoc)
 
 	return nil
 }

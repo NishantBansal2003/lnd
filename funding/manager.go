@@ -647,10 +647,15 @@ type Manager struct {
 type channelOpeningState uint8
 
 const (
+	// markedConfirm is the pending state of a channel if the funding
+	// transaction is confirmed on-chain, but numconfs has not been
+	// reached
+	markedConfirm channelOpeningState = iota
+
 	// markedOpen is the opening state of a channel if the funding
 	// transaction is confirmed on-chain, but channelReady is not yet
 	// successfully sent to the other peer.
-	markedOpen channelOpeningState = iota
+	markedOpen
 
 	// channelReadySent is the opening state of a channel if the
 	// channelReady message has successfully been sent to the other peer,
@@ -662,20 +667,18 @@ const (
 	// channelReady message has been sent, but we still haven't announced
 	// the channel to the network.
 	addedToGraph
-
-	markedConfirm
 )
 
 func (c channelOpeningState) String() string {
 	switch c {
+	case markedConfirm:
+		return "markedConfirm"
 	case markedOpen:
 		return "markedOpen"
 	case channelReadySent:
 		return "channelReadySent"
 	case addedToGraph:
 		return "addedToGraph"
-	case markedConfirm:
-		return "markedConfirm"
 	default:
 		return "unknown"
 	}
@@ -1172,6 +1175,26 @@ func (f *Manager) stateStep(channel *channeldb.OpenChannel,
 		chanID, shortChanID, channelState)
 
 	switch channelState {
+	// The funding transaction was confirmed, but has not reached numconfs
+	case markedConfirm:
+		// As the channelReady message is now sent to the peer, the
+		// channel is moved to the next state of the state machine. It
+		// will be moved to the last state (actually deleted from the
+		// database) after the channel is finally announced.
+		err := f.saveChannelOpeningState(
+			&channel.FundingOutpoint, markedOpen,
+			shortChanID,
+		)
+		if err != nil {
+			return fmt.Errorf("error setting channel state to"+
+				" markedOpen: %w", err)
+		}
+
+		log.Debugf("Channel(%v) with ShortChanID %v: successfully "+
+			"sent ChannelReady", chanID, shortChanID)
+
+		return nil
+
 	// The funding transaction was confirmed, but we did not successfully
 	// send the channelReady message to the peer, so let's do that now.
 	case markedOpen:
@@ -1329,14 +1352,6 @@ func (f *Manager) handleConfirmation(channel *channeldb.OpenChannel) error {
 		TxPosition:  uint16(fundingPoint.Index),
 	}
 
-	// // Now that that the channel has been fully confirmed, we'll request
-	// // that the wallet fully verify this channel to ensure that it can be
-	// // used.
-	// err = f.cfg.Wallet.ValidateChannel(channel, confDetails.Tx)
-	// if err != nil {
-	// 	return fmt.Errorf("unable to validate channel: %w", err)
-	// }
-
 	// The funding transaction now being confirmed, we add this channel to
 	// the fundingManager's internal persistent state machine that we use
 	// to track the remaining process of the channel opening. This is
@@ -1351,11 +1366,11 @@ func (f *Manager) handleConfirmation(channel *channeldb.OpenChannel) error {
 			"markedConfirm: %v", err)
 	}
 
-	// err = channel.MarkAsConfirmed(shortChanID)
-	// if err != nil {
-	// 	return fmt.Errorf("error setting channel pending flag to "+
-	// 		"false:	%v", err)
-	// }
+	err = channel.MarkAsConfirmed(shortChanID)
+	if err != nil {
+		return fmt.Errorf("error setting channel pending flag to "+
+			"false:	%v", err)
+	}
 
 	return nil
 }
