@@ -1501,9 +1501,9 @@ func (c *OpenChannel) fullSync(tx kvdb.RwTx) error {
 	return putOpenChannel(chanBucket, c)
 }
 
-// MarkAsConfirmed marks a channel as fully open given a locator that uniquely
-// describes its location within the chain.
-func (c *OpenChannel) MarkAsConfirmed(openLoc lnwire.ShortChannelID) error {
+// MarkConfirmedScid updates the channel's ShortChannelID after the channel
+// has been confirmed but before it is fully opened.
+func (c *OpenChannel) MarkConfirmedScid(scid lnwire.ShortChannelID) error {
 	c.Lock()
 	defer c.Unlock()
 
@@ -1520,14 +1520,14 @@ func (c *OpenChannel) MarkAsConfirmed(openLoc lnwire.ShortChannelID) error {
 			return err
 		}
 
-		channel.ShortChannelID = openLoc
+		channel.ShortChannelID = scid
 
 		return putOpenChannel(chanBucket, channel)
 	}, func() {}); err != nil {
 		return err
 	}
 
-	c.ShortChannelID = openLoc
+	c.ShortChannelID = scid
 
 	return nil
 }
