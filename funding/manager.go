@@ -1280,13 +1280,16 @@ func (f *Manager) stateStep(channel *channeldb.OpenChannel,
 	return fmt.Errorf("undefined channelState: %v", channelState)
 }
 
-func (f *Manager) handleConfirmation(channel *channeldb.OpenChannel) error {
+func (f *Manager) handleConfirmation(channel *channeldb.OpenChannel) {
+
+	defer f.wg.Done()
 
 	chanFundingScript, err := makeFundingScript(channel)
 	if err != nil {
-		return fmt.Errorf("unable to create funding script for "+
+		log.Errorf("unable to create funding script for "+
 			"ChannelPoint(%v): %v",
 			channel.FundingOutpoint, err)
+		return
 
 	}
 
@@ -1300,16 +1303,17 @@ func (f *Manager) handleConfirmation(channel *channeldb.OpenChannel) error {
 	select {
 	case confchanDetails, ok := <-chanConfNtfn.Confirmed:
 		if !ok {
-			return fmt.Errorf("ChainNotifier shutting "+
+			log.Errorf("ChainNotifier shutting "+
 				"down, can't complete funding flow "+
 				"for ChannelPoint(%v)",
 				channel.FundingOutpoint)
+			return
 
 		}
 		confDetails = confchanDetails
 
 	case <-f.quit:
-		return ErrFundingManagerShuttingDown
+		return
 	}
 
 	fundingPoint := channel.FundingOutpoint
@@ -1341,10 +1345,10 @@ func (f *Manager) handleConfirmation(channel *channeldb.OpenChannel) error {
 
 	err = channel.MarkConfirmedScid(shortChanID)
 	if err != nil {
-		return fmt.Errorf("error setting channel pending flag to "+
+		log.Errorf("error setting channel pending flag to "+
 			"false:	%v", err)
+		return
 	}
-	return nil
 }
 
 // advancePendingChannelState waits for a pending channel's funding tx to
@@ -3158,10 +3162,8 @@ func (f *Manager) waitForFundingConfirmation(
 	defer f.wg.Done()
 	defer close(confChan)
 
-	if err := f.handleConfirmation(completeChan); err != nil {
-		log.Errorf("%v", err)
-		return
-	}
+	f.wg.Add(1)
+	go f.handleConfirmation(completeChan)
 
 	// Register with the ChainNotifier for a notification once the funding
 	// transaction reaches `numConfs` confirmations.
