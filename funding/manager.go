@@ -1322,9 +1322,6 @@ func (f *Manager) handleConfirmation(channel *channeldb.OpenChannel,
 			"stopping funding flow for ChannelPoint(%v)",
 			channel.FundingOutpoint)
 		return
-
-	case <-f.quit:
-		return
 	}
 
 	fundingPoint := channel.FundingOutpoint
@@ -1420,11 +1417,6 @@ func (f *Manager) advancePendingChannelState(channel *channeldb.OpenChannel,
 
 		return nil
 	}
-
-	cancelChan := make(chan struct{})
-	f.wg.Add(1)
-	go f.handleConfirmation(channel, cancelChan)
-	defer close(cancelChan)
 
 	confChannel, err := f.waitForFundingWithTimeout(channel)
 	if err == ErrConfirmationTimeout {
@@ -3103,6 +3095,9 @@ func (f *Manager) waitForFundingWithTimeout(
 
 	f.wg.Add(1)
 	go f.waitForFundingConfirmation(ch, cancelChan, confChan)
+
+	f.wg.Add(1)
+	go f.handleConfirmation(ch, cancelChan)
 
 	// If we are not the initiator, we have no money at stake and will
 	// timeout waiting for the funding transaction to confirm after a
