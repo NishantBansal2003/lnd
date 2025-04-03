@@ -1414,6 +1414,9 @@ func (f *Manager) advancePendingChannelState(channel *channeldb.OpenChannel,
 		return nil
 	}
 
+	f.wg.Add(1)
+	go f.handleConfirmation(channel)
+
 	confChannel, err := f.waitForFundingWithTimeout(channel)
 	if err == ErrConfirmationTimeout {
 		return f.fundingTimeout(channel, pendingChanID)
@@ -3166,9 +3169,6 @@ func (f *Manager) waitForFundingConfirmation(
 
 	defer f.wg.Done()
 	defer close(confChan)
-
-	f.wg.Add(1)
-	go f.handleConfirmation(completeChan)
 
 	// Register with the ChainNotifier for a notification once the funding
 	// transaction reaches `numConfs` confirmations.
