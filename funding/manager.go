@@ -1328,6 +1328,12 @@ func (f *Manager) handleConfirmation(channel *channeldb.OpenChannel,
 			"stopping funding flow for ChannelPoint(%v)",
 			channel.FundingOutpoint)
 		return
+
+	case <-f.quit:
+		log.Warnf("canceled waiting for funding confirmation, "+
+			"stopping funding flow for ChannelPoint(%v)",
+			channel.FundingOutpoint)
+		return
 	}
 
 	fundingPoint := channel.FundingOutpoint
