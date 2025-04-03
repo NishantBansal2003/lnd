@@ -1520,7 +1520,6 @@ func (c *OpenChannel) MarkAsConfirmed(openLoc lnwire.ShortChannelID) error {
 			return err
 		}
 
-		channel.IsPending = true
 		channel.ShortChannelID = openLoc
 
 		return putOpenChannel(chanBucket, channel)
@@ -1528,9 +1527,7 @@ func (c *OpenChannel) MarkAsConfirmed(openLoc lnwire.ShortChannelID) error {
 		return err
 	}
 
-	c.IsPending = true
 	c.ShortChannelID = openLoc
-	// c.Packager = NewChannelPackager(openLoc)
 
 	return nil
 }

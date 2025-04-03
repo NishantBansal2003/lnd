@@ -650,12 +650,12 @@ const (
 	// markedConfirm is the pending state of a channel if the funding
 	// transaction is confirmed on-chain, but numconfs has not been
 	// reached
-	markedConfirm channelOpeningState = iota
+	// markedConfirm channelOpeningState = iota
 
 	// markedOpen is the opening state of a channel if the funding
 	// transaction is confirmed on-chain, but channelReady is not yet
 	// successfully sent to the other peer.
-	markedOpen
+	markedOpen channelOpeningState = iota
 
 	// channelReadySent is the opening state of a channel if the
 	// channelReady message has successfully been sent to the other peer,
@@ -671,8 +671,8 @@ const (
 
 func (c channelOpeningState) String() string {
 	switch c {
-	case markedConfirm:
-		return "markedConfirm"
+	// case markedConfirm:
+	// 	return "markedConfirm"
 	case markedOpen:
 		return "markedOpen"
 	case channelReadySent:
@@ -1176,24 +1176,24 @@ func (f *Manager) stateStep(channel *channeldb.OpenChannel,
 
 	switch channelState {
 	// The funding transaction was confirmed, but has not reached numconfs
-	case markedConfirm:
-		// As the channelReady message is now sent to the peer, the
-		// channel is moved to the next state of the state machine. It
-		// will be moved to the last state (actually deleted from the
-		// database) after the channel is finally announced.
-		err := f.saveChannelOpeningState(
-			&channel.FundingOutpoint, markedOpen,
-			shortChanID,
-		)
-		if err != nil {
-			return fmt.Errorf("error setting channel state to"+
-				" markedOpen: %w", err)
-		}
+	// case markedConfirm:
+	// 	// As the channelReady message is now sent to the peer, the
+	// 	// channel is moved to the next state of the state machine. It
+	// 	// will be moved to the last state (actually deleted from the
+	// 	// database) after the channel is finally announced.
+	// 	err := f.saveChannelOpeningState(
+	// 		&channel.FundingOutpoint, markedOpen,
+	// 		shortChanID,
+	// 	)
+	// 	if err != nil {
+	// 		return fmt.Errorf("error setting channel state to"+
+	// 			" markedOpen: %w", err)
+	// 	}
 
-		log.Debugf("Channel(%v) with ShortChanID %v: successfully "+
-			"sent ChannelReady", chanID, shortChanID)
+	// 	log.Debugf("Channel(%v) with ShortChanID %v: successfully "+
+	// 		"sent ChannelReady", chanID, shortChanID)
 
-		return nil
+	// 	return nil
 
 	// The funding transaction was confirmed, but we did not successfully
 	// send the channelReady message to the peer, so let's do that now.
@@ -1309,13 +1309,14 @@ func (f *Manager) stateStep(channel *channeldb.OpenChannel,
 
 func (f *Manager) handleConfirmation(channel *channeldb.OpenChannel) error {
 
+	// defer f.wg.Done()
+
 	chanFundingScript, err := makeFundingScript(channel)
 	if err != nil {
-		log.Errorf("unable to create funding script for "+
+		return fmt.Errorf("unable to create funding script for "+
 			"ChannelPoint(%v): %v",
 			channel.FundingOutpoint, err)
 
-		return err
 	}
 
 	chanConfNtfn, err := f.cfg.Notifier.RegisterConfirmationsNtfn(
@@ -1332,6 +1333,7 @@ func (f *Manager) handleConfirmation(channel *channeldb.OpenChannel) error {
 				"down, can't complete funding flow "+
 				"for ChannelPoint(%v)",
 				channel.FundingOutpoint)
+
 		}
 		confDetails = confchanDetails
 
@@ -1358,20 +1360,19 @@ func (f *Manager) handleConfirmation(channel *channeldb.OpenChannel) error {
 	// useful to resume the opening process in case of restarts. We set the
 	// opening state before we mark the channel opened in the database,
 	// such that we can receover from one of the db writes failing.
-	err = f.saveChannelOpeningState(
-		&fundingPoint, markedConfirm, &shortChanID,
-	)
-	if err != nil {
-		return fmt.Errorf("error setting channel state to "+
-			"markedConfirm: %v", err)
-	}
+	// err = f.saveChannelOpeningState(
+	// 	&fundingPoint, markedConfirm, &shortChanID,
+	// )
+	// if err != nil {
+	// 	return fmt.Errorf("error setting channel state to "+
+	// 		"markedConfirm: %v", err)
+	// }
 
 	err = channel.MarkAsConfirmed(shortChanID)
 	if err != nil {
 		return fmt.Errorf("error setting channel pending flag to "+
 			"false:	%v", err)
 	}
-
 	return nil
 }
 
@@ -1433,11 +1434,11 @@ func (f *Manager) advancePendingChannelState(channel *channeldb.OpenChannel,
 		return nil
 	}
 
-	if err := f.handleConfirmation(channel); err != nil {
-		return fmt.Errorf("error waiting for funding "+
-			"confirmation for ChannelPoint(%v): %v",
-			channel.FundingOutpoint, err)
-	}
+	// if err := f.handleConfirmation(channel); err != nil {
+	// 	return fmt.Errorf("error waiting for funding "+
+	// 		"confirmation for ChannelPoint(%v): %v",
+	// 		channel.FundingOutpoint, err)
+	// }
 
 	confChannel, err := f.waitForFundingWithTimeout(channel)
 	if err == ErrConfirmationTimeout {
@@ -3127,7 +3128,7 @@ func (f *Manager) waitForFundingWithTimeout(
 	defer close(cancelChan)
 
 	select {
-	case err := <-timeoutChan:
+	case err, _ := <-timeoutChan:
 		if err != nil {
 			return nil, err
 		}
@@ -3191,6 +3192,14 @@ func (f *Manager) waitForFundingConfirmation(
 
 	defer f.wg.Done()
 	defer close(confChan)
+
+	// errorChan := make(chan error, 1)
+
+	// f.wg.Add(1)
+	if err := f.handleConfirmation(completeChan); err != nil {
+		log.Errorf("%v", err)
+		return
+	}
 
 	// Register with the ChainNotifier for a notification once the funding
 	// transaction reaches `numConfs` confirmations.
