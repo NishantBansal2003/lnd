@@ -1284,7 +1284,8 @@ func (f *Manager) stateStep(channel *channeldb.OpenChannel,
 	return fmt.Errorf("undefined channelState: %v", channelState)
 }
 
-func (f *Manager) handleConfirmation(channel *channeldb.OpenChannel) {
+func (f *Manager) handleConfirmation(channel *channeldb.OpenChannel,
+	cancelChan <-chan struct{}) {
 
 	defer f.wg.Done()
 
@@ -1315,6 +1316,12 @@ func (f *Manager) handleConfirmation(channel *channeldb.OpenChannel) {
 
 		}
 		confDetails = confchanDetails
+
+	case <-cancelChan:
+		log.Warnf("canceled waiting for funding confirmation, "+
+			"stopping funding flow for ChannelPoint(%v)",
+			completeChan.FundingOutpoint)
+		return
 
 	case <-f.quit:
 		return
@@ -1413,9 +1420,6 @@ func (f *Manager) advancePendingChannelState(channel *channeldb.OpenChannel,
 
 		return nil
 	}
-
-	f.wg.Add(1)
-	go f.handleConfirmation(channel)
 
 	confChannel, err := f.waitForFundingWithTimeout(channel)
 	if err == ErrConfirmationTimeout {
@@ -3094,6 +3098,9 @@ func (f *Manager) waitForFundingWithTimeout(
 
 	f.wg.Add(1)
 	go f.waitForFundingConfirmation(ch, cancelChan, confChan)
+
+	f.wg.Add(1)
+	go f.handleConfirmation(ch, cancelChan)
 
 	// If we are not the initiator, we have no money at stake and will
 	// timeout waiting for the funding transaction to confirm after a
