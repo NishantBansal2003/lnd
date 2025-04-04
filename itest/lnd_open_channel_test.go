@@ -933,6 +933,11 @@ func testConfirmationUntilConfirmedOnPending(ht *lntest.HarnessTest) {
 		require.Equal(ht, expectedConfirmationsLeft, pendingBob[0].
 			ConfirmationUntilConfirmed)
 
+		if i == 2 {
+			ht.RestartNode(alice)
+			ht.RestartNode(bob)
+		}
+
 		// Mine the next block.
 		ht.MineEmptyBlocks(1)
 	}
