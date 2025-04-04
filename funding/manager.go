@@ -3012,6 +3012,7 @@ func (f *Manager) waitForFundingWithTimeout(
 	confChan := make(chan *confirmedChannel)
 	timeoutChan := make(chan error, 1)
 	cancelChan := make(chan struct{})
+	errorChan := make(chan error, 1)
 
 	// If the channel is not a zero-conf channel, we add the SCID to the
 	// database once the channel is confirmed but not fully opened. This
@@ -3019,7 +3020,7 @@ func (f *Manager) waitForFundingWithTimeout(
 	// is fully opened.
 	if !ch.IsZeroConf() {
 		f.wg.Add(1)
-		go f.handleChannelConfirmation(ch, cancelChan)
+		go f.handleChannelConfirmation(ch, cancelChan, errorChan)
 	}
 
 	f.wg.Add(1)
@@ -3034,24 +3035,37 @@ func (f *Manager) waitForFundingWithTimeout(
 	}
 	defer close(cancelChan)
 
-	select {
-	case err := <-timeoutChan:
-		if err != nil {
-			return nil, err
-		}
-		return nil, ErrConfirmationTimeout
+	for {
+		select {
+		case err := <-errorChan:
+			if err != nil {
+				return nil, fmt.Errorf("waiting for funding"+
+					"confirmation failed: %v", err)
+			}
 
-	case <-f.quit:
-		// The fundingManager is shutting down, and will resume wait on
-		// startup.
-		return nil, ErrFundingManagerShuttingDown
+			// If the channel confirmation is handled successfully,
+			// set errorChan to nil to disable this case in the
+			// select statement for subsequent channel messages.
+			errorChan = nil
 
-	case confirmedChannel, ok := <-confChan:
-		if !ok {
-			return nil, fmt.Errorf("waiting for funding" +
-				"confirmation failed")
+		case err := <-timeoutChan:
+			if err != nil {
+				return nil, err
+			}
+			return nil, ErrConfirmationTimeout
+
+		case <-f.quit:
+			// The fundingManager is shutting down, and will resume
+			// wait on startup.
+			return nil, ErrFundingManagerShuttingDown
+
+		case confirmedChannel, ok := <-confChan:
+			if !ok {
+				return nil, fmt.Errorf("waiting for funding" +
+					"confirmation failed")
+			}
+			return confirmedChannel, nil
 		}
-		return confirmedChannel, nil
 	}
 }
 
@@ -3091,15 +3105,16 @@ func makeFundingScript(channel *channeldb.OpenChannel) ([]byte, error) {
 //
 // NOTE: This MUST be run as a goroutine.
 func (f *Manager) handleChannelConfirmation(openChannel *channeldb.OpenChannel,
-	cancelChan <-chan struct{}) {
+	cancelChan <-chan struct{}, errorChan chan<- error) {
 
 	defer f.wg.Done()
+	defer close(errorChan)
 
 	// Generate the funding output script needed to detect the transaction
 	// confirmation
 	chanFundingScript, err := makeFundingScript(openChannel)
 	if err != nil {
-		log.Errorf("Unable to create funding script for "+
+		errorChan <- fmt.Errorf("Unable to create funding script for "+
 			"ChannelPoint(%v): %v", openChannel.FundingOutpoint,
 			err)
 
@@ -3112,8 +3127,8 @@ func (f *Manager) handleChannelConfirmation(openChannel *channeldb.OpenChannel,
 		openChannel.BroadcastHeight(),
 	)
 	if err != nil {
-		log.Errorf("Unable to register for confirmation of "+
-			"ChannelPoint(%v): %v", openChannel.FundingOutpoint,
+		errorChan <- fmt.Errorf("Unable to register for confirmation "+
+			"of ChannelPoint(%v): %v", openChannel.FundingOutpoint,
 			err)
 
 		return
@@ -3129,23 +3144,17 @@ func (f *Manager) handleChannelConfirmation(openChannel *channeldb.OpenChannel,
 		// fallthrough
 
 	case <-cancelChan:
-		log.Warnf("canceled waiting for funding confirmation, "+
-			"stopping funding flow for ChannelPoint(%v)",
-			openChannel.FundingOutpoint)
-
+		// canceled waiting for funding confirmation
 		return
 
 	case <-f.quit:
-		log.Warnf("fundingManager shutting down, stopping funding "+
-			"flow for ChannelPoint(%v)",
-			openChannel.FundingOutpoint)
-
+		// fundingManager is shutting down
 		return
 	}
 
 	if !ok {
-		log.Errorf("ChainNotifier shutting down, can't complete "+
-			"funding flow for ChannelPoint(%v)",
+		errorChan <- fmt.Errorf("ChainNotifier shutting down, can't "+
+			"complete funding flow for ChannelPoint(%v)",
 			openChannel.FundingOutpoint)
 
 		return
@@ -3165,9 +3174,8 @@ func (f *Manager) handleChannelConfirmation(openChannel *channeldb.OpenChannel,
 	// Update the channel's state in the database to mark it as confirmed.
 	err = openChannel.MarkConfirmedScid(shortChanID)
 	if err != nil {
-		log.Errorf("failed to update confirmed state for "+
+		errorChan <- fmt.Errorf("failed to update confirmed state for "+
 			"ChannelPoint(%v): %v", fundingPoint, err)
-		return
 	}
 }
 
