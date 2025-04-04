@@ -883,7 +883,7 @@ func testFundingExpiryBlocksOnPending(ht *lntest.HarnessTest) {
 // decreases to 0 as expected.
 func testConfirmationUntilConfirmedOnPending(ht *lntest.HarnessTest) {
 	const (
-		numConfs = 5
+		numConfs = int32(5)
 		chanAmt  = 100000
 	)
 
