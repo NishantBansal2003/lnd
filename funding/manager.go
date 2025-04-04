@@ -3052,6 +3052,7 @@ func (f *Manager) waitForFundingWithTimeout(
 			if err != nil {
 				return nil, err
 			}
+
 			return nil, ErrConfirmationTimeout
 
 		case <-f.quit:
@@ -3064,6 +3065,7 @@ func (f *Manager) waitForFundingWithTimeout(
 				return nil, fmt.Errorf("waiting for funding" +
 					"confirmation failed")
 			}
+
 			return confirmedChannel, nil
 		}
 	}
@@ -3114,7 +3116,7 @@ func (f *Manager) handleChannelConfirmation(openChannel *channeldb.OpenChannel,
 	// confirmation
 	chanFundingScript, err := makeFundingScript(openChannel)
 	if err != nil {
-		errorChan <- fmt.Errorf("Unable to create funding script for "+
+		errorChan <- fmt.Errorf("unable to create funding script for "+
 			"ChannelPoint(%v): %v", openChannel.FundingOutpoint,
 			err)
 
@@ -3127,7 +3129,7 @@ func (f *Manager) handleChannelConfirmation(openChannel *channeldb.OpenChannel,
 		openChannel.BroadcastHeight(),
 	)
 	if err != nil {
-		errorChan <- fmt.Errorf("Unable to register for confirmation "+
+		errorChan <- fmt.Errorf("unable to register for confirmation "+
 			"of ChannelPoint(%v): %v", openChannel.FundingOutpoint,
 			err)
 

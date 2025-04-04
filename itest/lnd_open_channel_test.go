@@ -914,7 +914,8 @@ func testConfirmationUntilConfirmedOnPending(ht *lntest.HarnessTest) {
 	ht.AssertNumPendingOpenChannels(alice, 1)
 	ht.AssertNumPendingOpenChannels(bob, 1)
 
-	// Restart both nodes to ensure confirmed state persistence.
+	// Restart both nodes to test that the appropriate state has been
+	// persisted and that both nodes recover gracefully.
 	ht.RestartNode(alice)
 	ht.RestartNode(bob)
 
