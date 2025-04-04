@@ -3924,13 +3924,21 @@ func (r *rpcServer) fetchPendingOpenChannels() (pendingOpenChannels, error) {
 		// confirmation height. This is calculated as distance from the
 		// current block height to the block height where the funding
 		// transaction is located + required number of confirmations.
+		var remainingConfs int32
 		openTxBlockHeight := int32(
 			pendingChan.ShortChannelID.BlockHeight,
 		)
 
-		confirmationHeight := openTxBlockHeight +
-			int32(pendingChan.NumConfsRequired) - 1
-		remainingConfs := max(0, confirmationHeight-currentHeight)
+		if openTxBlockHeight > 0 {
+			confirmationHeight := openTxBlockHeight +
+				int32(pendingChan.NumConfsRequired) - 1
+			remainingConfs = max(0, confirmationHeight-
+				currentHeight)
+		} else {
+			// If the funding transaction is not confirmed yet,then
+			// remainingConfs will always be NumConfsRequired.
+			remainingConfs = int32(pendingChan.NumConfsRequired)
+		}
 
 		customChanBytes, err := encodeCustomChanData(pendingChan)
 		if err != nil {

@@ -906,6 +906,13 @@ func testConfirmationUntilConfirmedOnPending(ht *lntest.HarnessTest) {
 	ht.AssertNumPendingOpenChannels(alice, 1)
 	ht.AssertNumPendingOpenChannels(bob, 1)
 
+	// Since the funding transaction is not confirmed yet,
+	// ConfirmationUntilConfirmed will always be numConfs.
+	require.Equal(ht, numConfs, ht.AssertNumPendingOpenChannels(alice,
+		1)[0].ConfirmationUntilConfirmed)
+	require.Equal(ht, numConfs, ht.AssertNumPendingOpenChannels(bob, 1)[0].
+		ConfirmationUntilConfirmed)
+
 	// Mine the first block containing the funding transaction, This
 	// confirms the funding transaction but does not yet open the channel.
 	ht.MineBlocksAndAssertNumTxes(1, 1)
