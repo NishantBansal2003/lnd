@@ -3953,9 +3953,11 @@ func (r *rpcServer) fetchPendingOpenChannels() (pendingOpenChannels, error) {
 				Memo:                 string(pendingChan.Memo),
 				CustomChannelData:    customChanBytes,
 			},
-			CommitWeight:               commitWeight,
-			CommitFee:                  int64(localCommitment.CommitFee),
-			FeePerKw:                   int64(localCommitment.FeePerKw),
+			CommitWeight: commitWeight,
+			CommitFee: int64(localCommitment.
+				CommitFee),
+			FeePerKw: int64(localCommitment.
+				FeePerKw),
 			FundingExpiryBlocks:        fundingExpiryBlocks,
 			ConfirmationUntilConfirmed: remainingConfs,
 		}

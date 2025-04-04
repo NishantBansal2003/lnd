@@ -882,7 +882,6 @@ func testFundingExpiryBlocksOnPending(ht *lntest.HarnessTest) {
 // fully opened, the ConfirmationUntilConfirmed field of the PendingChannel
 // decreases to 0 as expected.
 func testConfirmationUntilConfirmedOnPending(ht *lntest.HarnessTest) {
-
 	const (
 		numConfs = 5
 		chanAmt  = 100000

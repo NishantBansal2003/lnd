@@ -662,8 +662,6 @@ const (
 	// channelReady message has been sent, but we still haven't announced
 	// the channel to the network.
 	addedToGraph
-
-	markedConfirm
 )
 
 func (c channelOpeningState) String() string {
@@ -674,8 +672,6 @@ func (c channelOpeningState) String() string {
 		return "channelReadySent"
 	case addedToGraph:
 		return "addedToGraph"
-	case markedConfirm:
-		return "markedConfirm"
 	default:
 		return "unknown"
 	}
@@ -1294,8 +1290,8 @@ func (f *Manager) handleConfirmation(channel *channeldb.OpenChannel,
 		log.Errorf("unable to create funding script for "+
 			"ChannelPoint(%v): %v",
 			channel.FundingOutpoint, err)
-		return
 
+		return
 	}
 
 	chanConfNtfn, err := f.cfg.Notifier.RegisterConfirmationsNtfn(
@@ -1306,6 +1302,7 @@ func (f *Manager) handleConfirmation(channel *channeldb.OpenChannel,
 		log.Errorf("Unable to register for confirmation of "+
 			"ChannelPoint(%v): %v", channel.FundingOutpoint,
 			err)
+
 		return
 	}
 
@@ -1318,8 +1315,8 @@ func (f *Manager) handleConfirmation(channel *channeldb.OpenChannel,
 				"down, can't complete funding flow "+
 				"for ChannelPoint(%v)",
 				channel.FundingOutpoint)
-			return
 
+			return
 		}
 		confDetails = confchanDetails
 
@@ -1327,12 +1324,14 @@ func (f *Manager) handleConfirmation(channel *channeldb.OpenChannel,
 		log.Warnf("canceled waiting for funding confirmation, "+
 			"stopping funding flow for ChannelPoint(%v)",
 			channel.FundingOutpoint)
+
 		return
 
 	case <-f.quit:
 		log.Warnf("canceled waiting for funding confirmation, "+
 			"stopping funding flow for ChannelPoint(%v)",
 			channel.FundingOutpoint)
+
 		return
 	}
 
@@ -1368,6 +1367,7 @@ func (f *Manager) handleConfirmation(channel *channeldb.OpenChannel,
 	if err != nil {
 		log.Errorf("error setting channel pending flag to "+
 			"false:	%v", err)
+
 		return
 	}
 }
