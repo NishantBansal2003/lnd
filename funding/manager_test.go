@@ -407,7 +407,7 @@ func createTestFundingManager(t *testing.T, privKey *btcec.PrivateKey,
 
 	chainNotifier := &mockNotifier{
 		oneConfChannel: make(chan *chainntnfs.TxConfirmation, 1),
-		sixConfChannel: make(chan *chainntnfs.TxConfirmation, 1),
+		sixConfChannel: make(chan *chainntnfs.TxConfirmation, 6),
 		epochChan:      make(chan *chainntnfs.BlockEpoch, 2),
 	}
 
@@ -1503,6 +1503,12 @@ func testNormalWorkflow(t *testing.T, chanType *lnwire.ChannelType) {
 	bob.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
 		Tx: fundingTx,
 	}
+	alice.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
+		Tx: fundingTx,
+	}
+	bob.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
+		Tx: fundingTx,
+	}
 
 	// The funding transaction was mined, so assert that both funding
 	// managers now have the state of this channel 'markedOpen' in their
@@ -1816,6 +1822,12 @@ func TestFundingManagerRestartBehavior(t *testing.T) {
 	bob.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
 		Tx: fundingTx,
 	}
+	alice.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
+		Tx: fundingTx,
+	}
+	bob.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
+		Tx: fundingTx,
+	}
 
 	// The funding transaction was mined, so assert that both funding
 	// managers now have the state of this channel 'markedOpen' in their
@@ -1970,6 +1982,12 @@ func TestFundingManagerOfflinePeer(t *testing.T) {
 	}
 
 	// Notify that transaction was mined
+	alice.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
+		Tx: fundingTx,
+	}
+	bob.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
+		Tx: fundingTx,
+	}
 	alice.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
 		Tx: fundingTx,
 	}
@@ -2472,6 +2490,12 @@ func TestFundingManagerReceiveChannelReadyTwice(t *testing.T) {
 	bob.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
 		Tx: fundingTx,
 	}
+	alice.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
+		Tx: fundingTx,
+	}
+	bob.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
+		Tx: fundingTx,
+	}
 
 	// The funding transaction was mined, so assert that both funding
 	// managers now have the state of this channel 'markedOpen' in their
@@ -2585,6 +2609,12 @@ func TestFundingManagerRestartAfterChanAnn(t *testing.T) {
 	bob.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
 		Tx: fundingTx,
 	}
+	alice.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
+		Tx: fundingTx,
+	}
+	bob.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
+		Tx: fundingTx,
+	}
 
 	// The funding transaction was mined, so assert that both funding
 	// managers now have the state of this channel 'markedOpen' in their
@@ -2684,6 +2714,12 @@ func TestFundingManagerRestartAfterReceivingChannelReady(t *testing.T) {
 	bob.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
 		Tx: fundingTx,
 	}
+	alice.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
+		Tx: fundingTx,
+	}
+	bob.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
+		Tx: fundingTx,
+	}
 
 	// The funding transaction was mined, so assert that both funding
 	// managers now have the state of this channel 'markedOpen' in their
@@ -2773,6 +2809,12 @@ func TestFundingManagerPrivateChannel(t *testing.T) {
 	)
 
 	// Notify that transaction was mined
+	alice.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
+		Tx: fundingTx,
+	}
+	bob.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
+		Tx: fundingTx,
+	}
 	alice.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
 		Tx: fundingTx,
 	}
@@ -2898,6 +2940,12 @@ func TestFundingManagerPrivateRestart(t *testing.T) {
 	)
 
 	// Notify that transaction was mined
+	alice.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
+		Tx: fundingTx,
+	}
+	bob.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
+		Tx: fundingTx,
+	}
 	alice.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
 		Tx: fundingTx,
 	}
@@ -3346,6 +3394,12 @@ func TestFundingManagerCustomChannelParameters(t *testing.T) {
 	bob.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
 		Tx: fundingTx,
 	}
+	alice.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
+		Tx: fundingTx,
+	}
+	bob.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
+		Tx: fundingTx,
+	}
 
 	// After the funding transaction is mined, Alice will send
 	// channelReady to Bob.
@@ -3675,6 +3729,12 @@ func TestFundingManagerMaxPendingChannels(t *testing.T) {
 
 	// Notify that the transactions were mined.
 	for i := 0; i < maxPending; i++ {
+		alice.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
+			Tx: txs[i],
+		}
+		bob.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
+			Tx: txs[i],
+		}
 		alice.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
 			Tx: txs[i],
 		}
@@ -4954,6 +5014,13 @@ func TestFundingManagerCoinbase(t *testing.T) {
 	// Send along the oneConfChannel again and then assert that the open
 	// event is sent. This serves as the 100 block + MinAcceptDepth
 	// confirmation.
+	alice.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
+		Tx: fundingTx,
+	}
+
+	bob.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
+		Tx: fundingTx,
+	}
 	alice.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
 		Tx: fundingTx,
 	}
