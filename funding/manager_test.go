@@ -407,7 +407,7 @@ func createTestFundingManager(t *testing.T, privKey *btcec.PrivateKey,
 
 	chainNotifier := &mockNotifier{
 		oneConfChannel: make(chan *chainntnfs.TxConfirmation, 1),
-		sixConfChannel: make(chan *chainntnfs.TxConfirmation, 6),
+		sixConfChannel: make(chan *chainntnfs.TxConfirmation, 1),
 		epochChan:      make(chan *chainntnfs.BlockEpoch, 2),
 	}
 

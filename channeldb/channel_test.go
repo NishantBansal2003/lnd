@@ -1005,7 +1005,7 @@ func TestOpeningChannelTxConfirmation(t *testing.T) {
 		FundingBroadcastHeight, "broadcast height mismatch")
 
 	confirmedScid := lnwire.ShortChannelID{
-		BlockHeight: 5,
+		BlockHeight: broadcastHeight + 1,
 		TxIndex:     10,
 		TxPosition:  15,
 	}
