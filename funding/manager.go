@@ -3088,8 +3088,11 @@ func (f *Manager) waitForFundingConfirmation(
 	completeChan *channeldb.OpenChannel, cancelChan <-chan struct{},
 	confChan chan<- *confirmedChannel) {
 
+	errorChan := make(chan error, 1)
+
 	defer f.wg.Done()
 	defer close(confChan)
+	defer close(errorChan)
 
 	// Register with the ChainNotifier for a notification once the funding
 	// transaction reaches `numConfs` confirmations.
@@ -3123,6 +3126,10 @@ func (f *Manager) waitForFundingConfirmation(
 	log.Infof("Waiting for funding tx (%v) to reach %v confirmations",
 		txid, numConfs)
 
+	go f.waitForFundingUpdate(
+		confNtfn, completeChan, txid, numConfs, cancelChan, errorChan,
+	)
+
 	var confDetails *chainntnfs.TxConfirmation
 	var ok bool
 
@@ -3142,6 +3149,12 @@ func (f *Manager) waitForFundingConfirmation(
 		log.Warnf("fundingManager shutting down, stopping funding "+
 			"flow for ChannelPoint(%v)",
 			completeChan.FundingOutpoint)
+		return
+
+	case err := <-errorChan:
+		log.Warnf("error waiting for funding updation, stopping "+
+			"funding flow for ChannelPoint(%v): %v",
+			completeChan.FundingOutpoint, err)
 		return
 	}
 
@@ -3172,6 +3185,77 @@ func (f *Manager) waitForFundingConfirmation(
 	}:
 	case <-f.quit:
 		return
+	}
+}
+
+func (f *Manager) waitForFundingUpdate(
+	confNtfn *chainntnfs.ConfirmationEvent,
+	completeChan *channeldb.OpenChannel,
+	txid chainhash.Hash,
+	numConfs uint32,
+	cancelChan <-chan struct{},
+	errorChan chan error) {
+
+	// Monitor block confirmation events for the funding transaction. And
+	// return when the funding tx has received the required number of
+	// confirmations.
+	for {
+		select {
+		case updDetails := <-confNtfn.Updates:
+			log.Tracef("funding tx %s received a confirmation, %d "+
+				" number of confirmations still required", txid,
+				updDetails.NumConfsLeft)
+
+			// Handle first confirmation of the funding transaction.
+			if updDetails.NumConfsLeft == numConfs-1 {
+				log.Infof("funding tx %s received first "+
+					"confirmation", txid)
+
+				err := completeChan.MarkConfirmationHeight(
+					updDetails.BlockHeight,
+				)
+				if err != nil {
+					errorChan <- fmt.Errorf("failed to "+
+						"mark confirmation height: %v",
+						err)
+
+					return
+				}
+			}
+
+			// If we haven't reached final confirmation, continue
+			// waiting for confirmations.
+			if updDetails.NumConfsLeft > 0 {
+				continue
+			}
+
+			log.Infof("funding tx %s received all confirmations",
+				txid)
+
+			return
+
+		case <-confNtfn.NegativeConf:
+			log.Warnf("funding tx %s was reorged out; channel "+
+				"point: %s", txid, completeChan.FundingOutpoint)
+
+			// Reset the confirmation height to 0 because the
+			// funding transaction was reorged out.
+			err := completeChan.MarkConfirmationHeight(uint32(0))
+			if err != nil {
+				errorChan <- fmt.Errorf("failed to reset "+
+					"confirmation height for "+
+					"ChannelPoint(%v): %v",
+					completeChan.FundingOutpoint, err)
+
+				return
+			}
+
+		case <-cancelChan:
+			return
+
+		case <-f.quit:
+			return
+		}
 	}
 }
 
