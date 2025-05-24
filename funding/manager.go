@@ -3079,7 +3079,8 @@ func makeFundingScript(channel *channeldb.OpenChannel) ([]byte, error) {
 // process once the funding transaction has been broadcast. The primary
 // function of waitForFundingConfirmation is to wait for blockchain
 // confirmation, and then to notify the other systems that must be notified
-// when a channel has become active for lightning transactions.
+// when a channel has become active for lightning transactions. It also updates
+// the channel's opening transaction block height in the database.
 // The wait can be canceled by closing the cancelChan. In case of success,
 // a *lnwire.ShortChannelID will be passed to confChan.
 //
@@ -3087,6 +3088,8 @@ func makeFundingScript(channel *channeldb.OpenChannel) ([]byte, error) {
 func (f *Manager) waitForFundingConfirmation(
 	completeChan *channeldb.OpenChannel, cancelChan <-chan struct{},
 	confChan chan<- *confirmedChannel) {
+
+	updateChan := make(chan error, 1)
 
 	defer f.wg.Done()
 	defer close(confChan)
@@ -3123,6 +3126,11 @@ func (f *Manager) waitForFundingConfirmation(
 	log.Infof("Waiting for funding tx (%v) to reach %v confirmations",
 		txid, numConfs)
 
+	f.wg.Add(1)
+	go f.waitForFundingUpdate(
+		confNtfn, completeChan, txid, numConfs, cancelChan, updateChan,
+	)
+
 	var confDetails *chainntnfs.TxConfirmation
 	var ok bool
 
@@ -3142,6 +3150,13 @@ func (f *Manager) waitForFundingConfirmation(
 		log.Warnf("fundingManager shutting down, stopping funding "+
 			"flow for ChannelPoint(%v)",
 			completeChan.FundingOutpoint)
+		return
+
+	case err := <-updateChan:
+		log.Warnf("error waiting for funding updation, stopping "+
+			"funding flow for ChannelPoint(%v): %v",
+			completeChan.FundingOutpoint, err)
+
 		return
 	}
 
@@ -3172,6 +3187,82 @@ func (f *Manager) waitForFundingConfirmation(
 	}:
 	case <-f.quit:
 		return
+	}
+}
+
+// waitForFundingUpdate blocks until the funding transaction reaches the
+// required number of confirmations. It updates the channel's confirmation
+// height when the transaction receives its first confirmation, and resets the
+// confirmation height to zero if the transaction is reorged out.
+//
+// NOTE: This MUST be run as a goroutine.
+func (f *Manager) waitForFundingUpdate(
+	confNtfn *chainntnfs.ConfirmationEvent,
+	completeChan *channeldb.OpenChannel, txid chainhash.Hash,
+	numConfs uint32, cancelChan <-chan struct{}, updateChan chan error) {
+
+	defer f.wg.Done()
+
+	// Monitor block confirmation events for the funding transaction. And
+	// return when the funding tx has received the required number of
+	// confirmations.
+	for {
+		select {
+		case updDetails := <-confNtfn.Updates:
+			log.Tracef("funding tx %s received a confirmation, %d "+
+				" number of confirmations still required", txid,
+				updDetails.NumConfsLeft)
+
+			// Handle first confirmation of the funding transaction.
+			if updDetails.NumConfsLeft == numConfs-1 {
+				log.Infof("funding tx %s received first "+
+					"confirmation", txid)
+
+				err := completeChan.MarkConfirmationHeight(
+					updDetails.BlockHeight,
+				)
+				if err != nil {
+					updateChan <- fmt.Errorf("failed to "+
+						"mark confirmation height: %v",
+						err)
+
+					return
+				}
+			}
+
+			// If we haven't reached final confirmation, continue
+			// waiting for confirmations.
+			if updDetails.NumConfsLeft > 0 {
+				continue
+			}
+
+			log.Infof("funding tx %s received all confirmations",
+				txid)
+
+			return
+
+		case <-confNtfn.NegativeConf:
+			log.Warnf("funding tx %s was reorged out; channel "+
+				"point: %s", txid, completeChan.FundingOutpoint)
+
+			// Reset the confirmation height to 0 because the
+			// funding transaction was reorged out.
+			err := completeChan.MarkConfirmationHeight(uint32(0))
+			if err != nil {
+				updateChan <- fmt.Errorf("failed to reset "+
+					"confirmation height for "+
+					"ChannelPoint(%v): %v",
+					completeChan.FundingOutpoint, err)
+
+				return
+			}
+
+		case <-cancelChan:
+			return
+
+		case <-f.quit:
+			return
+		}
 	}
 }
 
