@@ -1736,7 +1736,10 @@ func (n *TxNotifier) NotifyHeight(height uint32) error {
 		for confRequest := range confRequests {
 			confSet := n.confNotifications[confRequest]
 			for _, ntfn := range confSet.ntfns {
-				txConfHeight := confSet.details.BlockHeight +
+				// blockHeight is the height of the block which
+				// contains the transaction.
+				blockHeight := confSet.details.BlockHeight
+				txConfHeight := blockHeight +
 					ntfn.NumConfirmations - 1
 				numConfsLeft := txConfHeight - height
 
@@ -2106,8 +2109,8 @@ func (n *TxNotifier) notifyConfsUpdate(ntfn *ConfNtfn, num uint32,
 	// sending it as it means this same value has already been sent before.
 	if num >= ntfn.numConfsLeft {
 		Log.Debugf("Skipped dispatched update (numConfsLeft=%v) for "+
-			"request %v conf_id=%v", num, ntfn.ConfRequest,
-			ntfn.ConfID)
+			"request %v conf_id=%v", num,
+			ntfn.ConfRequest, ntfn.ConfID)
 
 		return nil
 	}

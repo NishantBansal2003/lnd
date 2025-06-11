@@ -227,6 +227,32 @@ type TxConfirmation struct {
 	NumConfsLeft uint32
 }
 
+// TxUpdateInfo contains information about a transaction before it has reached
+// its required number of confirmations. Transactions are registered for
+// notification for a specific number of "required" confirmations, this struct
+// will update the caller incrementally after each new block is found as long as
+// the transaction is not yet fully regarded as confirmed.
+type TxUpdateInfo struct {
+	// BlockHeight is the height of the block that contains the transaction.
+	BlockHeight uint32
+
+	// NumConfsLeft is the number of confirmations left for the transaction
+	// to be regarded as fully confirmed.
+	NumConfsLeft uint32
+}
+
+// String returns a string representation of TxUpdateInfo.
+func (t TxUpdateInfo) String() string {
+	return fmt.Sprintf("TxUpdateInfo{NumConfsLeft: %d, BlockHeight: %d}",
+		t.NumConfsLeft, t.BlockHeight)
+}
+
+// Equal returns true if the TxUpdateInfo is equal to other TxUpdateInfo.
+func (t TxUpdateInfo) Equal(other *TxUpdateInfo) bool {
+	return t.NumConfsLeft == other.NumConfsLeft &&
+		t.BlockHeight == other.BlockHeight
+}
+
 // ConfirmationEvent encapsulates a confirmation notification. With this struct,
 // callers can be notified of: the instance the target txid reaches the targeted
 // number of confirmations, how many confirmations are left for the target txid
