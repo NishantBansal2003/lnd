@@ -22,7 +22,20 @@
 
 # New Features
 
+* The `RegisterConfirmationsNtfn` call of the `ChainNotifier` now optionally
+  [supports returning a confirmation notification for each confirmation
+  received](https://github.com/lightningnetwork/lnd/pull/9878) for the target
+  transaction/output script.
+
 ## Functional Enhancements
+* [Add](https://github.com/lightningnetwork/lnd/pull/9677)
+  `ConfirmationsUntilActive` and `ConfirmationHeight` field to the
+  `PendingChannelsResponse_PendingChannel` message, providing users with the
+  number of confirmations remaining before a pending channel becomes active and 
+  the block height at which the funding transaction was first confirmed.
+  This change also persists the channel's confirmation height in the database 
+  once its funding transaction receives one confirmation, allowing tracking of 
+  confirmation progress before the channel becomes active.
 
 ## RPC Additions
 
@@ -86,3 +99,5 @@
 ## Tooling and Documentation
 
 # Contributors (Alphabetical Order)
+
+* Nishant Bansal
