@@ -187,6 +187,12 @@ when running LND with an aux component injected (custom channels).
   respected when a coop close is initiated. Before the max fee rate would only
   be effective for the remote party in the negotiation.
 
+* [Added support](https://github.com/lightningnetwork/lnd/pull/9432) for the
+  `upfront-shutdown-address` configuration in `lnd.conf`, allowing users to
+  specify an address for cooperative channel closures where funds will be sent.
+  This applies to both funders and fundees, with the ability to override the
+  value during channel opening or acceptance.
+
 ## Functional Enhancements
 * [Add ability](https://github.com/lightningnetwork/lnd/pull/8998) to paginate 
  wallet transactions.
