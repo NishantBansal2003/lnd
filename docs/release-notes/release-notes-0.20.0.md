@@ -55,6 +55,13 @@ when the appropriate TLV flag is set. This allows for HTLCs carrying metadata to
 reflect their state on the channel commitment without having to send or receive
 a certain amount of msats.
 
+* The `RegisterConfirmationsNtfn` call of the `ChainNotifier` now optionally
+  [supports returning a confirmation notification for each confirmation
+  received](https://github.com/lightningnetwork/lnd/pull/9878) for the target
+  transaction/output script. The original `Updates` channel has been refactored
+  out of `ConfirmationEvent`, but its behavior is still available when this
+  option is enabled.
+
 ## Functional Enhancements
 
 * RPCs `walletrpc.EstimateFee` and `walletrpc.FundPsbt` now
@@ -242,6 +249,7 @@ reader of a payment request.
 * Erick Cestari
 * Funyug
 * Mohamed Awnallah
+* Nishant Bansal
 * Pins
 * Torkel Rogstad
 * Yong Yu
