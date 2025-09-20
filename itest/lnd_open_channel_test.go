@@ -1338,6 +1338,7 @@ func testOpenChannelWithShutdownAddr(ht *lntest.HarnessTest) {
 	// Close the channel and verify closure.
 	closeParams := lnrpc.CloseChannelRequest{
 		ChannelPoint: channelPoint,
+		NoWait:       true,
 		TargetConf:   6,
 	}
 	closeClient := alice.RPC.CloseChannel(&closeParams)
