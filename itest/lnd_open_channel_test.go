@@ -1297,14 +1297,18 @@ func testOpenChannelWithShutdownAddr(ht *lntest.HarnessTest) {
 
 	// Update nodes with upfront shutdown addresses and restart them.
 	aliceNodeArgs := []string{
-		fmt.Sprintf("--upfront-shutdown-address=%s",
-			aliceShutdownAddr.Address),
+		fmt.Sprintf(
+			"--upfront-shutdown-address=%s",
+			aliceShutdownAddr.Address,
+		),
 	}
 	ht.RestartNodeWithExtraArgs(alice, aliceNodeArgs)
 
 	bobNodeArgs := []string{
-		fmt.Sprintf("--upfront-shutdown-address=%s",
-			bobShutdownAddr.Address),
+		fmt.Sprintf(
+			"--upfront-shutdown-address=%s",
+			bobShutdownAddr.Address,
+		),
 	}
 	ht.RestartNodeWithExtraArgs(bob, bobNodeArgs)
 

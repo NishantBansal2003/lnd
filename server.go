@@ -1454,7 +1454,7 @@ func newServer(ctx context.Context, cfg *Config, listenAddrs []net.Addr,
 
 	// Attempt to parse the provided upfront-shutdown address (if any).
 	script, err := chancloser.ParseUpfrontShutdownAddress(
-		cfg.CloseAddress, cfg.ActiveNetParams.Params,
+		cfg.UpfrontShutdownAddr, cfg.ActiveNetParams.Params,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing upfront shutdown: %w",
