@@ -537,6 +537,12 @@ type Config struct {
 	// NoDisconnectOnPongFailure controls if we'll disconnect if a peer
 	// doesn't respond to a pong in time.
 	NoDisconnectOnPongFailure bool `long:"no-disconnect-on-pong-failure" description:"If true, a peer will *not* be disconnected if a pong is not received in time or is mismatched. Defaults to false, meaning peers *will* be disconnected on pong failure."`
+
+	// UpfrontShutdownAddr specifies an address that our funds will be paid
+	// out to on cooperative channel close. This applies to all new channel
+	// opens unless overridden by an option in openchannel or by a channel
+	// acceptor.
+	UpfrontShutdownAddr string `long:"upfront-shutdown-address" description:"Address to enforce payout of funds to on cooperative close applies to all channel opens unless overridden by openchannel options or a channel acceptor."`
 }
 
 // GRPCConfig holds the configuration options for the gRPC server.
