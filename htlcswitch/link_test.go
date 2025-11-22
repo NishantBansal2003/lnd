@@ -2071,6 +2071,7 @@ type mockPeer struct {
 	sync.Mutex
 	disconnected bool
 	sentMsgs     chan lnwire.Message
+	pubKeyBytes  [33]byte
 	quit         chan struct{}
 }
 
@@ -2103,7 +2104,7 @@ func (m *mockPeer) AddNewChannel(_ *lnpeer.NewChannel,
 }
 func (m *mockPeer) WipeChannel(*wire.OutPoint) {}
 func (m *mockPeer) PubKey() [33]byte {
-	return [33]byte{}
+	return m.pubKeyBytes
 }
 func (m *mockPeer) IdentityKey() *btcec.PublicKey {
 	return nil
@@ -2126,6 +2127,15 @@ func (m *mockPeer) AddPendingChannel(_ lnwire.ChannelID,
 
 func (m *mockPeer) RemovePendingChannel(_ lnwire.ChannelID) error {
 	return nil
+}
+
+// createMockPeer creates a new mock peer for testing.
+func createMockPeer(pubKeyBytes [33]byte) *mockPeer {
+	return &mockPeer{
+		sentMsgs:    make(chan lnwire.Message, fuzzMsgChannelSize),
+		pubKeyBytes: pubKeyBytes,
+		quit:        make(chan struct{}),
+	}
 }
 
 type singleLinkTestHarness struct {
