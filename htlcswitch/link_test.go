@@ -2160,7 +2160,7 @@ func newSingleLinkTestHarness(t *testing.T, chanAmt,
 
 	aliceLc, bobLc, err := createTestChannel(
 		t, alicePrivKey, bobPrivKey, chanAmt, chanAmt,
-		chanReserve, chanReserve, chanID,
+		chanReserve, chanReserve, 200, 800, 6000, 0, 0, 724, chanID,
 	)
 	if err != nil {
 		return singleLinkTestHarness{}, err
@@ -6230,7 +6230,7 @@ func TestCheckHtlcForward(t *testing.T) {
 
 	testChannel, _, err := createTestChannel(
 		t, alicePrivKey, bobPrivKey, 100000, 100000,
-		1000, 1000, lnwire.ShortChannelID{},
+		1000, 1000, 200, 800, 6000, 0, 0, 724, lnwire.ShortChannelID{},
 	)
 	if err != nil {
 		t.Fatal(err)
