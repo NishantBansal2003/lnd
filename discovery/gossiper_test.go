@@ -940,7 +940,10 @@ func createTestCtx(t *testing.T, startHeight uint32, isChanPeer bool) (
 		return lnwire.ShortChannelID{}, fmt.Errorf("no peer alias")
 	}
 
+	hID := lnwire.ShortChannelID{BlockHeight: startHeight}
+
 	gossiper := New(Config{
+		ChanSeries:  newMockChannelGraphTimeSeries(hID),
 		ChainIO:     chain,
 		ChainParams: &chaincfg.MainNetParams,
 		Notifier:    notifier,
