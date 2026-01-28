@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"math"
 	"testing"
 	"time"
 
@@ -46,6 +47,14 @@ const (
 	stfuStateOffset         = 3
 	stateExchangeOffset     = 2
 	udpateBlockHeightOffset = 5
+
+	// For the fuzz tests, cap the block height to roughly the year 2142.
+	blockHeightCap = 6990480
+
+	// Maximum and minimum limits on channel capacity currently enforced by
+	// LND.
+	maxFundingAmt = btcutil.Amount(1<<24) - 1
+	minFundingAmt = btcutil.Amount(20000)
 )
 
 // fuzzState represents the different states in the HTLC fuzz state machine.
@@ -87,7 +96,7 @@ type expectedErrors struct {
 	invalidRevocation bool
 	invalidSync       bool
 	invalidStfu       bool
-	invalidUpdateFee  bool
+	internalLinkError bool
 }
 
 // fuzzNetwork represents a test network harness used for fuzzing HTLC state
@@ -130,9 +139,19 @@ func getUint64(data []byte) uint64 {
 	return binary.BigEndian.Uint64(data)
 }
 
+// getInt64 extracts a non-negative int64 from a byte slice.
+func getInt64(data []byte) int64 {
+	return int64(getUint64(data) % uint64(math.MaxInt64+1))
+}
+
 // getUint32 extracts a uint32 from a byte slice.
 func getUint32(data []byte) uint32 {
 	return binary.BigEndian.Uint32(data)
+}
+
+// getInt64 extracts a non-negative int32 from a byte slice.
+func getInt32(data []byte) int32 {
+	return int32(getUint32(data) % uint32(math.MaxInt32+1))
 }
 
 // hasEnoughData checks if there's sufficient data remaining.
@@ -148,8 +167,8 @@ func createChannelLink(t *testing.T, privKey *btcec.PrivateKey, peer *mockPeer,
 	t.Helper()
 
 	feeEstimator := chainfee.NewStaticEstimator(
-		chainfee.SatPerKWeight(getUint64(data[0:8])),
-		chainfee.SatPerKWeight(getUint64(data[8:16])),
+		chainfee.SatPerKWeight(getInt64(data[0:8])),
+		chainfee.SatPerKWeight(getInt64(data[8:16])),
 	)
 
 	sphinxRouter := sphinx.NewRouter(
@@ -201,7 +220,7 @@ func createChannelLink(t *testing.T, privKey *btcec.PrivateKey, peer *mockPeer,
 		case ErrSyncError, ErrRecoveryError:
 			require.True(t, expectedErrs.invalidSync)
 		case ErrInternalError:
-			require.True(t, expectedErrs.invalidUpdateFee)
+			require.True(t, expectedErrs.internalLinkError)
 		default:
 			t.Fatalf("received unexpected link error: %v",
 				linkErr.code)
@@ -237,6 +256,7 @@ func createChannelLink(t *testing.T, privKey *btcec.PrivateKey, peer *mockPeer,
 			MinUpdateTimeout:    30 * time.Minute,
 			MaxUpdateTimeout:    40 * time.Minute,
 			OnChannelFailure:    onChannelFailure,
+			SyncStates:          true,
 			MaxFeeAllocation:    byteToFloat64(data[16]),
 			MaxFeeExposure: lnwire.MilliSatoshi(
 				getUint64(data[17:25]),
@@ -263,7 +283,7 @@ func createChannelLink(t *testing.T, privKey *btcec.PrivateKey, peer *mockPeer,
 // setupSide initializes one side of invoice registry and channel link.
 func setupSide(t *testing.T, privKey *btcec.PrivateKey, remotePub [33]byte,
 	channel *lnwallet.LightningChannel, data []byte, blockHeight *uint32,
-	syncMsg lnwire.Message) (*mockInvoiceRegistry,
+	syncMsg lnwire.Message, canGetSyncErr bool) (*mockInvoiceRegistry,
 	*channelLink, *expectedErrors) {
 
 	t.Helper()
@@ -273,6 +293,16 @@ func setupSide(t *testing.T, privKey *btcec.PrivateKey, remotePub [33]byte,
 		t, privKey, createMockPeer(remotePub), channel, registry, data,
 		blockHeight,
 	)
+
+	// We might get a sync/internal error in the link if the peer has sent
+	// us a malformed channel_reestablish message.
+	expectedErrors.invalidSync = canGetSyncErr
+	expectedErrors.internalLinkError = canGetSyncErr
+
+	// We may receive an invalid revocation if the peer sends a malformed
+	// channel_reestablish message and we later process a revoke_and_ack
+	// message, as the channel may already be marked as borked.
+	expectedErrors.invalidRevocation = canGetSyncErr
 
 	// Forcefully share the channel_reestablish message to mark the link as
 	// reestablished. If this is not done forcefully, the resumeLink
@@ -294,21 +324,44 @@ func setupFuzzNetwork(t *testing.T, data []byte) *fuzzNetwork {
 	}
 
 	_, chanID := genID()
-	aliceAmount := btcutil.Amount(getUint64(data[0:8]))
-	bobAmount := btcutil.Amount(getUint64(data[8:16]))
-	aliceReserve := btcutil.Amount(getUint64(data[16:24]))
-	bobReserve := btcutil.Amount(getUint64(data[24:32]))
-	aliceDustLimit := btcutil.Amount(getUint64(data[32:40]))
-	bobDustLimit := btcutil.Amount(getUint64(data[40:48]))
-	aliceFeePerKw := chainfee.SatPerKWeight(getUint64(data[48:56]))
-	aliceMinHTLC := lnwire.NewMSatFromSatoshis(btcutil.Amount(getUint64(
-		data[56:64],
-	)))
-	bobMinHTLC := lnwire.NewMSatFromSatoshis(btcutil.Amount(getUint64(
-		data[64:72],
-	)))
+
+	// Cap the channel size to the maximum channel size currently accepted
+	// on the Bitcoin chain within the Lightning Protocol, and also enforce
+	// a minimum equal to the smallest channel size currently accepted by
+	// LND.
+	chanCapacity := minFundingAmt + (btcutil.Amount(getInt64(data[0:8])) %
+		(maxFundingAmt - minFundingAmt + 1))
+	aliceAmount := btcutil.Amount(getInt64(data[8:16])) %
+		(chanCapacity + 1)
+	bobAmount := chanCapacity - aliceAmount
+
+	// The maximum limit on channel reserves is set to be 20% of the channel
+	// capacity.
+	maxReserve := chanCapacity / 5
+	aliceReserve := btcutil.Amount(getInt64(data[16:24])) % (maxReserve + 1)
+	bobReserve := btcutil.Amount(getInt64(data[24:32])) % (maxReserve + 1)
+
+	// The dust limit must be less than or equal to both the channel reserve
+	// and the initial balance on that side, so that at least one output is
+	// created when the channel becomes active.
+	aliceMaxDust := min(aliceReserve, aliceAmount)
+	aliceDustLimit := btcutil.Amount(getInt64(data[32:40])) %
+		(aliceMaxDust + 1)
+	bobMaxDust := min(bobReserve, bobAmount)
+	bobDustLimit := btcutil.Amount(getInt64(data[40:48])) % (bobMaxDust + 1)
+
+	// If the minimum HTLC limit is too large, then the channel won't be
+	// useful for sending any payments.
+	aliceMinHTLC := lnwire.MilliSatoshi(getUint64(
+		data[48:56]) % (uint64(chanCapacity + 1)),
+	)
+	bobMinHTLC := lnwire.MilliSatoshi(
+		getUint64(data[56:64]) % (uint64(chanCapacity + 1)),
+	)
+
+	aliceFeePerKw := chainfee.SatPerKWeight(getInt64(data[64:72]))
 	aliceFeeWu := lntypes.WeightUnit(getUint64(data[72:80]))
-	blockHeight := getUint32(data[80:84])
+	blockHeight := getUint32(data[80:84]) % (blockHeightCap + 1)
 
 	var remotePub, localPub [33]byte
 	remoteKeyPriv, remoteKeyPub := btcec.PrivKeyFromBytes(alicePrivKey)
@@ -322,10 +375,7 @@ func setupFuzzNetwork(t *testing.T, data []byte) *fuzzNetwork {
 		aliceDustLimit, bobDustLimit, aliceFeePerKw, aliceMinHTLC,
 		bobMinHTLC, aliceFeeWu, chanID,
 	)
-	if err != nil {
-		// Invalid configuration from fuzzer
-		return nil
-	}
+	require.NoError(t, err)
 
 	// Remote side setup.
 	localChanSyncMsg, err := localChannel.channel.State().ChanSyncMsg()
@@ -333,6 +383,7 @@ func setupFuzzNetwork(t *testing.T, data []byte) *fuzzNetwork {
 	remoteRegistry, remoteLink, remoteExpectedErrs := setupSide(
 		t, remoteKeyPriv, localPub, remoteChannel.channel,
 		data[remoteConfigOffset:], &blockHeight, localChanSyncMsg,
+		false,
 	)
 
 	// Local side setup.
@@ -341,6 +392,7 @@ func setupFuzzNetwork(t *testing.T, data []byte) *fuzzNetwork {
 	localRegistry, localLink, localExpectedErrs := setupSide(
 		t, localKeyPriv, remotePub, localChannel.channel,
 		data[localConfigOffset:], &blockHeight, remoteChanSyncMsg,
+		false,
 	)
 
 	return &fuzzNetwork{
@@ -369,15 +421,13 @@ func parseHTLCParams(data []byte, offset int,
 		attemptID:      attemptID,
 		addInvoice:     uint64(data[offset+1])%2 > 0,
 		isRemoteSender: uint64(data[offset+2])%2 > 0,
-		// Set the amount/CLTV delta to be greater than 0.
-		amount: lnwire.NewMSatFromSatoshis(
-			max(1, btcutil.Amount(
-				getUint64(data[offset+3:offset+11]),
-			)),
+		// Set the amount/CLTV delta to be greater than 0, and cap the
+		// amount at 21 million BTC.
+		amount: lnwire.MilliSatoshi(
+			max(1, (getUint64(data[offset+3:offset+11]) %
+				uint64(btcutil.MaxSatoshi+1))),
 		),
-		finalCLTVDelta: max(
-			1, int32(getUint32(data[offset+11:offset+15])),
-		),
+		finalCLTVDelta: max(1, getInt32(data[offset+11:offset+15])),
 	}
 
 	// Extract preimage from fuzz data.
@@ -559,14 +609,6 @@ func (network *fuzzNetwork) processHTLCAdd(offset int, attemptID uint64) int {
 	// will not add further HTLCs.
 	_ = link.handleDownstreamUpdateAdd(network.t.Context(), packet)
 
-	// Here, we could receive a link failure because the given htlc might
-	// cause dust to exceed the configured fee limit.
-	if params.isRemoteSender {
-		network.localExpectedErrs.invalidUpdateFee = true
-	} else {
-		network.remoteExpectedErrs.invalidUpdateFee = true
-	}
-
 	return newOffset
 }
 
@@ -639,21 +681,12 @@ func (network *fuzzNetwork) processUpdateFee(offset int) int {
 		return offset + stateExchangeOffset
 	}
 
-	_ = sender.updateChannelFee(
-		network.t.Context(), chainfee.SatPerKWeight(
-			btcutil.Amount(getUint64(
-				network.data[offset+2:offset+10],
-			)),
-		),
-	)
-
-	// Here, we could receive a link failure because the given fee might
-	// cause dust to exceed the configured fee limit.
-	if isRemoteSender {
-		network.localExpectedErrs.invalidUpdateFee = true
-	} else {
-		network.remoteExpectedErrs.invalidUpdateFee = true
-	}
+	// The minimum feePerKw limit is 253, so ensure that the fee is set
+	// above this value.
+	feePerKw := max(chainfee.FeePerKwFloor, chainfee.SatPerKWeight(
+		getInt64(network.data[offset+2:offset+10]),
+	))
+	_ = sender.updateChannelFee(network.t.Context(), feePerKw)
 
 	return offset + updateFeeOffset
 }
@@ -752,14 +785,14 @@ func (network *fuzzNetwork) maybeMalformMessage(msg lnwire.Message, offset int,
 	cursor++
 
 	canMutate := func(n int, useSelector bool) bool {
-		if !hasEnoughData(network.data, cursor, n) {
-			return false
-		}
-
 		// If we don't want to consume a selector byte, mutation is
 		// allowed.
 		if !useSelector {
-			return true
+			return hasEnoughData(network.data, cursor, n)
+		}
+
+		if !hasEnoughData(network.data, cursor, n+1) {
+			return false
 		}
 
 		allowed := (network.data[cursor] % 2) == 0
@@ -773,52 +806,47 @@ func (network *fuzzNetwork) maybeMalformMessage(msg lnwire.Message, offset int,
 		out := *m
 
 		// ID
-		if canMutate(9, true) {
+		if canMutate(8, true) {
 			out.ID = getUint64(network.data[cursor : cursor+8])
 			cursor += 8
 			network.localExpectedErrs.invalidUpdate = true
 		}
 
 		// Amount
-		if canMutate(9, true) {
-			out.Amount = lnwire.NewMSatFromSatoshis(
-				btcutil.Amount(getUint64(
-					network.data[cursor : cursor+8],
-				)),
+		if canMutate(8, true) {
+			out.Amount = lnwire.MilliSatoshi(
+				getUint64(network.data[cursor : cursor+8]),
 			)
 			cursor += 8
 			network.localExpectedErrs.invalidUpdate = true
 		}
 
 		// Expiry
-		if canMutate(5, true) {
+		if canMutate(4, true) {
 			out.Expiry = getUint32(network.data[cursor : cursor+4])
 			cursor += 4
 			network.localExpectedErrs.invalidUpdate = true
 		}
 
 		// OnionBlob
-		if canMutate(1367, true) {
+		if canMutate(1366, true) {
 			copy(out.OnionBlob[:], network.data[cursor:cursor+1366])
 			cursor += 1366
 			network.localExpectedErrs.invalidUpdate = true
 		}
 
 		// BlindingPoint
-		if canMutate(34, true) {
-			blinding, err := btcec.ParsePubKey(
-				network.data[cursor : cursor+33],
+		if canMutate(32, true) {
+			_, blinding := btcec.PrivKeyFromBytes(
+				network.data[cursor : cursor+32],
 			)
 
-			// Only modify if the pubkey bytes are correct.
-			if err == nil {
-				out.BlindingPoint = tlv.SomeRecordT(
-					tlv.NewPrimitiveRecord[lnwire.
-						BlindingPointTlvType](blinding),
-				)
-				network.localExpectedErrs.invalidUpdate = true
-			}
-			cursor += 33
+			out.BlindingPoint = tlv.SomeRecordT(
+				tlv.NewPrimitiveRecord[lnwire.
+					BlindingPointTlvType](blinding),
+			)
+			network.localExpectedErrs.invalidUpdate = true
+			cursor += 32
 		}
 
 		return &out, cursor
@@ -827,14 +855,14 @@ func (network *fuzzNetwork) maybeMalformMessage(msg lnwire.Message, offset int,
 		out := *m
 
 		// ID
-		if canMutate(9, true) {
+		if canMutate(8, true) {
 			out.ID = getUint64(network.data[cursor : cursor+8])
 			cursor += 8
 			network.localExpectedErrs.invalidUpdate = true
 		}
 
 		// PaymentPreimage
-		if canMutate(33, true) {
+		if canMutate(32, true) {
 			copy(
 				out.PaymentPreimage[:],
 				network.data[cursor:cursor+32],
@@ -849,14 +877,14 @@ func (network *fuzzNetwork) maybeMalformMessage(msg lnwire.Message, offset int,
 		out := *m
 
 		// ID
-		if canMutate(9, true) {
+		if canMutate(8, true) {
 			out.ID = getUint64(network.data[cursor : cursor+8])
 			cursor += 8
 			network.localExpectedErrs.invalidUpdate = true
 		}
 
 		// FailureCode
-		if canMutate(3, true) {
+		if canMutate(2, true) {
 			out.FailureCode = lnwire.FailCode(
 				binary.BigEndian.Uint16(
 					network.data[cursor : cursor+2],
@@ -867,7 +895,7 @@ func (network *fuzzNetwork) maybeMalformMessage(msg lnwire.Message, offset int,
 		}
 
 		// ShaOnionBlob
-		if canMutate(33, true) {
+		if canMutate(32, true) {
 			copy(
 				out.ShaOnionBlob[:],
 				network.data[cursor:cursor+32],
@@ -882,14 +910,14 @@ func (network *fuzzNetwork) maybeMalformMessage(msg lnwire.Message, offset int,
 		out := *m
 
 		// ID
-		if canMutate(9, true) {
+		if canMutate(8, true) {
 			out.ID = getUint64(network.data[cursor : cursor+8])
 			cursor += 8
 			network.localExpectedErrs.invalidUpdate = true
 		}
 
 		// Reason
-		if canMutate(3, true) {
+		if canMutate(2, true) {
 			length := int(binary.BigEndian.Uint16(
 				network.data[cursor : cursor+2],
 			))
@@ -909,39 +937,55 @@ func (network *fuzzNetwork) maybeMalformMessage(msg lnwire.Message, offset int,
 	case *lnwire.CommitSig:
 		out := *m
 
-		// CommitSig
-		if canMutate(65, true) {
-			if sig, err := lnwire.NewSigFromWireECDSA(
+		// Returns a random signature from the fuzz data and also
+		// increments the cursor.
+		getRandomSig := func() lnwire.Sig {
+			sig, err := lnwire.NewSigFromWireECDSA(
 				network.data[cursor : cursor+64],
-			); err == nil {
-				out.CommitSig = sig
-				network.localExpectedErrs.
-					invalidCommitment = true
-			}
+			)
+			require.NoError(network.t, err)
+
 			cursor += 64
+			network.localExpectedErrs.invalidCommitment = true
+
+			return sig
+		}
+
+		// CommitSig
+		if canMutate(64, true) {
+			out.CommitSig = getRandomSig()
 		}
 
 		// HTLC sigs
-		var htlcSigs []lnwire.Sig
-		for _, sig := range out.HtlcSigs {
-			if canMutate(65, true) {
-				if newSig, err := lnwire.NewSigFromWireECDSA(
-					network.data[cursor : cursor+64],
-				); err == nil {
-					htlcSigs = append(htlcSigs, newSig)
-					network.localExpectedErrs.
-						invalidCommitment = true
-				}
-				cursor += 64
+		if canMutate(1, true) {
+			var mutatedHtlcSigs []lnwire.Sig
+			iterations := int(network.data[cursor])
+			sigIdx := 0
+			cursor++
 
-				if canMutate(1, true) {
-					htlcSigs = append(htlcSigs, sig)
+			for range iterations {
+				if sigIdx < len(out.HtlcSigs) {
+					// From the original HTLC sig, we will
+					// either keep it or drop it during this
+					// malformation.
+					if canMutate(0, true) {
+						mutatedHtlcSigs = append(
+							mutatedHtlcSigs,
+							out.HtlcSigs[sigIdx],
+						)
+					}
+					sigIdx++
 				}
-			} else {
-				htlcSigs = append(htlcSigs, sig)
+
+				// Maybe add a random signature.
+				if canMutate(64, true) {
+					mutatedHtlcSigs = append(
+						mutatedHtlcSigs, getRandomSig(),
+					)
+				}
 			}
+			out.HtlcSigs = mutatedHtlcSigs
 		}
-		out.HtlcSigs = htlcSigs
 
 		return &out, cursor
 
@@ -949,25 +993,21 @@ func (network *fuzzNetwork) maybeMalformMessage(msg lnwire.Message, offset int,
 		out := *m
 
 		// Revocation
-		if canMutate(33, true) {
+		if canMutate(32, true) {
 			copy(out.Revocation[:], network.data[cursor:cursor+32])
 			cursor += 32
 			network.localExpectedErrs.invalidRevocation = true
 		}
 
 		// NextRevocationKey
-		if canMutate(34, true) {
-			revocationKey, err := btcec.ParsePubKey(
-				network.data[cursor : cursor+33],
+		if canMutate(32, true) {
+			_, revocationKey := btcec.PrivKeyFromBytes(
+				network.data[cursor : cursor+32],
 			)
 
-			// Only modify if the pubkey bytes are correct.
-			if err == nil {
-				out.NextRevocationKey = revocationKey
-				network.localExpectedErrs.
-					invalidRevocation = true
-			}
-			cursor += 33
+			out.NextRevocationKey = revocationKey
+			network.localExpectedErrs.invalidRevocation = true
+			cursor += 32
 		}
 
 		return &out, cursor
@@ -976,14 +1016,20 @@ func (network *fuzzNetwork) maybeMalformMessage(msg lnwire.Message, offset int,
 		out := *m
 
 		// FeePerKw
-		if canMutate(9, true) {
+		if canMutate(8, true) {
 			out.FeePerKw = uint32(chainfee.SatPerKWeight(
-				btcutil.Amount(getUint64(
-					network.data[cursor : cursor+8],
-				)),
+				getInt64(network.data[cursor : cursor+8]),
 			))
 			cursor += 8
 			network.localExpectedErrs.invalidUpdate = true
+
+			// LND directly accepts the update fee if it is from
+			// the initiator without validating the balances.
+			// However, once the peer sends the commit signature,
+			// the balances are validated, and an invalid commitment
+			// is returned if the fee we applied causes an invalid
+			// balance amount.
+			network.localExpectedErrs.invalidCommitment = true
 		}
 
 		return &out, cursor
@@ -992,7 +1038,7 @@ func (network *fuzzNetwork) maybeMalformMessage(msg lnwire.Message, offset int,
 		out := *m
 
 		// NextLocalCommitHeight
-		if canMutate(9, true) {
+		if canMutate(8, true) {
 			out.NextLocalCommitHeight = getUint64(
 				network.data[cursor : cursor+8],
 			)
@@ -1001,7 +1047,7 @@ func (network *fuzzNetwork) maybeMalformMessage(msg lnwire.Message, offset int,
 		}
 
 		// RemoteCommitTailHeight
-		if canMutate(9, true) {
+		if canMutate(8, true) {
 			out.RemoteCommitTailHeight = getUint64(
 				network.data[cursor : cursor+8],
 			)
@@ -1010,7 +1056,7 @@ func (network *fuzzNetwork) maybeMalformMessage(msg lnwire.Message, offset int,
 		}
 
 		// LastRemoteCommitSecret
-		if canMutate(33, true) {
+		if canMutate(32, true) {
 			copy(
 				out.LastRemoteCommitSecret[:],
 				network.data[cursor:cursor+32],
@@ -1020,18 +1066,14 @@ func (network *fuzzNetwork) maybeMalformMessage(msg lnwire.Message, offset int,
 		}
 
 		// LocalUnrevokedCommitPoint
-		if canMutate(34, true) {
-			localUnRevokedCommitPt, err := btcec.ParsePubKey(
-				network.data[cursor : cursor+33],
+		if canMutate(32, true) {
+			_, localUnRevokedCommitPt := btcec.PrivKeyFromBytes(
+				network.data[cursor : cursor+32],
 			)
 
-			// Only modify if the pubkey bytes are correct.
-			if err == nil {
-				out.LocalUnrevokedCommitPoint =
-					localUnRevokedCommitPt
-				network.localExpectedErrs.invalidSync = true
-			}
-			cursor += 33
+			out.LocalUnrevokedCommitPoint = localUnRevokedCommitPt
+			network.localExpectedErrs.invalidSync = true
+			cursor += 32
 		}
 
 		return &out, cursor
@@ -1093,7 +1135,64 @@ readLoop:
 	network.localExpectedErrs.invalidCommitment = true
 	network.localExpectedErrs.invalidRevocation = true
 
+	// Reordering can cause ADD HTLCs to be shuffled, resulting in different
+	// HTLC IDs than the peer expects, which may cause it to return an
+	// invalid update.
+	network.localExpectedErrs.invalidUpdate = true
+
 	return offset
+}
+
+// handleUpdate wraps handleUpstreamMsg and records any expected link errors
+// resulting from handling the given message.
+func (network *fuzzNetwork) handleUpdate(link *channelLink, isRemoteSender bool,
+	msg lnwire.Message) {
+
+	network.t.Helper()
+
+	switch m := msg.(type) {
+	case *lnwire.UpdateAddHTLC, *lnwire.UpdateFee:
+		// We may receive a link failure if the given HTLC or fee
+		// increases the dust output or commit fee such that the
+		// configured maximum fee exposure is exceeded.
+		if isRemoteSender {
+			network.localExpectedErrs.internalLinkError = true
+		} else {
+			network.remoteExpectedErrs.internalLinkError = true
+		}
+
+	case *lnwire.CommitSig:
+		// We can receive an invalid commitment from the remote if the
+		// remote is sending empty HTLC sigs. This is very subtle and
+		// can happen when the remote sends an empty sig but it is never
+		// delivered to the local due to message reordering. As a result
+		// ,the remote has moved the local's commit chain tip ht. When a
+		// restart happens, the remote checks the local's next commit ht
+		// against its local tip ht (on the remote side) and again tries
+		// to send the commit sig. Channel sync does not error out here
+		// because the remote never shared the empty commit sig, it only
+		// added it to its own local's commit chain.
+		//
+		// During this process, some normal HTLC operations may already
+		// have been shared between both peers, so the commitment now
+		// has some HTLCs. If the remote again sends the empty commit
+		// sig, the local will error out since it wants updated HTLC/
+		// commitment sigs for all the HTLCs in its commitment, but it
+		// instead receives the empty sig that was carried over from the
+		// start.
+		//
+		// The easiest way to reproduce this issue is: the remote
+		// generates an empty commit sig and queues it. The local sends
+		// add HTLC and commit sig, the remote generates revoke_ack,
+		// then the queue is reordered and the revoke_ack message is
+		// sent. After both peers restart, the remote automatically
+		// generates a new empty commit sig message and sends it.
+		if isRemoteSender && (len(m.HtlcSigs) == 0) {
+			network.localExpectedErrs.invalidCommitment = true
+		}
+	}
+
+	link.handleUpstreamMsg(network.t.Context(), msg)
 }
 
 // exchangeUpdates handles message sending between peers.
@@ -1133,8 +1232,8 @@ func (network *fuzzNetwork) exchangeUpdates(offset int) int {
 			msg, offset, isRemoteSender,
 		)
 
-		receiver.handleUpstreamMsg(
-			network.t.Context(), mayBeMalformedMsg,
+		network.handleUpdate(
+			receiver, isRemoteSender, mayBeMalformedMsg,
 		)
 
 		offset = cursor
@@ -1150,7 +1249,6 @@ func (network *fuzzNetwork) exchangeUpdates(offset int) int {
 // again to handle the synchronization process.
 func (network *fuzzNetwork) restartNode(offset int) int {
 	network.t.Helper()
-	offset++
 
 	remoteKeyPriv, remoteKeyPub := btcec.PrivKeyFromBytes(alicePrivKey)
 	localKeyPriv, localKeyPub := btcec.PrivKeyFromBytes(bobPrivKey)
@@ -1170,8 +1268,8 @@ func (network *fuzzNetwork) restartNode(offset int) int {
 	require.NoError(network.t, err)
 	remoteRegistry, remoteLink, remoteExpectedErrs := setupSide(
 		network.t, remoteKeyPriv, localPub, remoteChannel,
-		network.linkSetupData, network.blockHeight,
-		localChanSyncMsg,
+		network.linkSetupData, network.blockHeight, localChanSyncMsg,
+		false,
 	)
 
 	// Local side setup.
@@ -1184,6 +1282,7 @@ func (network *fuzzNetwork) restartNode(offset int) int {
 		network.t, localKeyPriv, remotePub, localChannel,
 		network.linkSetupData[localConfigOffset-remoteConfigOffset:],
 		network.blockHeight, malformedMsg,
+		network.localExpectedErrs.invalidSync,
 	)
 
 	network.remoteChannel.channel = remoteChannel
@@ -1195,6 +1294,13 @@ func (network *fuzzNetwork) restartNode(offset int) int {
 	network.localRegistry = localRegistry
 	network.localLink = localLink
 	network.localExpectedErrs = localExpectedErrs
+
+	// If the remote sends a malformed channel_reestablish message, there
+	// may be cases where the local node sends a commit signature based on
+	// it, which the remote system is not expecting, causing it to return an
+	// invalid commit signature error.
+	network.remoteExpectedErrs.invalidCommitment = network.
+		localExpectedErrs.invalidSync
 
 	return cursor
 }
@@ -1211,7 +1317,7 @@ func (network *fuzzNetwork) udpateBlockHeight(offset int) int {
 	}
 
 	*network.blockHeight = max(
-		getUint32(network.data[offset+1:offset+5]),
+		getUint32(network.data[offset+1:offset+5])%(blockHeightCap+1),
 		*network.blockHeight,
 	)
 
@@ -1277,13 +1383,13 @@ func (network *fuzzNetwork) drainMessages() {
 	for {
 		select {
 		case localMsg := <-localPeer.sentMsgs:
-			network.remoteLink.handleUpstreamMsg(
-				network.t.Context(), localMsg,
+			network.handleUpdate(
+				network.remoteLink, false, localMsg,
 			)
 
 		case remoteMsg := <-remotePeer.sentMsgs:
-			network.localLink.handleUpstreamMsg(
-				network.t.Context(), remoteMsg,
+			network.handleUpdate(
+				network.localLink, true, remoteMsg,
 			)
 
 		default:
@@ -1327,6 +1433,7 @@ func (network *fuzzNetwork) runHTLCFuzzStateMachine() {
 			offset = network.udpateBlockHeight(offset)
 
 		case restartNode:
+			offset++
 			// Only restart the node if some message exchange has
 			// happened between peers, otherwise, there is no point
 			// in restarting the node again and again, as that will
@@ -1334,8 +1441,6 @@ func (network *fuzzNetwork) runHTLCFuzzStateMachine() {
 			if !isLastRestarted {
 				offset = network.restartNode(offset)
 				isLastRestarted = true
-			} else {
-				offset++
 			}
 		}
 
@@ -1357,11 +1462,12 @@ func FuzzHTLCStates(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		network := setupFuzzNetwork(t, data)
-
-		if network != nil {
-			// Execute the HTLC state machine with fuzz input.
-			network.runHTLCFuzzStateMachine()
+		if network == nil {
+			return
 		}
+
+		// Execute the HTLC state machine with fuzz input.
+		network.runHTLCFuzzStateMachine()
 	})
 }
 
@@ -1384,9 +1490,9 @@ func buildHTLCFuzzSetup() ([]byte, []byte, []byte, []byte) {
 	binary.BigEndian.PutUint64(data[24:32], 0)
 	binary.BigEndian.PutUint64(data[32:40], 200)
 	binary.BigEndian.PutUint64(data[40:48], 800)
-	binary.BigEndian.PutUint64(data[48:56], 6000)
+	binary.BigEndian.PutUint64(data[48:56], 0)
 	binary.BigEndian.PutUint64(data[56:64], 0)
-	binary.BigEndian.PutUint64(data[64:72], 0)
+	binary.BigEndian.PutUint64(data[64:72], 6000)
 	binary.BigEndian.PutUint64(data[72:80], 724)
 	binary.BigEndian.PutUint32(data[80:84], 100)
 
@@ -1401,6 +1507,12 @@ func buildHTLCFuzzSetup() ([]byte, []byte, []byte, []byte) {
 	binary.BigEndian.PutUint64(data[117:125], 0)
 	data[125] = 114
 	binary.BigEndian.PutUint64(data[126:134], 500000000)
+
+	// Share the initial ChannelReestablish and ChannelReady between peers.
+	data = append(data, byte(exchangeStateUpdates), 0,
+		byte(exchangeStateUpdates), 1, 0, 0,
+		byte(exchangeStateUpdates), 0,
+		byte(exchangeStateUpdates), 1, 0, 0)
 
 	// HTLC parameters.
 	htlcAmt := make([]byte, 8)
