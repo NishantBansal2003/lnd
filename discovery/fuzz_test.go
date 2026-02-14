@@ -12,8 +12,11 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/channeldb"
+	fnopt "github.com/lightningnetwork/lnd/fn/v2"
 	graphdb "github.com/lightningnetwork/lnd/graph/db"
+	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnmock"
 	"github.com/lightningnetwork/lnd/lnpeer"
@@ -22,6 +25,7 @@ import (
 	"github.com/lightningnetwork/lnd/netann"
 	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/lightningnetwork/lnd/tlv"
+	tmock "github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -448,6 +452,26 @@ func (fn *fuzzNetwork) maybeMalformMessage(msg lnwire.Message,
 			cursor += 32
 		}
 
+		// ShortChannelID
+		if canMutate(8) {
+			scid := lnwire.NewShortChanIDFromInt(
+				getUint64(fn.data[cursor : cursor+8]),
+			)
+			out.ShortChannelID = scid
+			cursor += 8
+
+			// Since the peer provided a malformed SCID, the local
+			// on-chain lookups should fail.
+			fn.chain.On("GetBlockHash", int64(scid.BlockHeight)).
+				Return(&chainhash.Hash{0xFF}, nil).Once()
+			fn.chain.On("GetBlock", &chainhash.Hash{0xFF}).
+				Return(&wire.MsgBlock{}, nil).Once()
+			fn.chain.On(
+				"GetUtxo", tmock.Anything, tmock.Anything,
+				scid.BlockHeight, tmock.Anything,
+			).Return(nil, fmt.Errorf("utxo not found")).Once()
+		}
+
 		return &out, cursor
 
 	case *lnwire.ChannelUpdate1:
@@ -599,7 +623,7 @@ func (fn *fuzzNetwork) sendRemoteNodeAnnouncement(offset int) int {
 
 // createChannelAnnouncement builds a channel announcement with node and
 // bitcoin keys populated.
-func (fn *fuzzNetwork) createChannelAnnouncement(peer *gossipPeer,
+func (fn *fuzzNetwork) createChannelAnnouncement(peer1, peer2 *gossipPeer,
 	scid lnwire.ShortChannelID) *lnwire.ChannelAnnouncement1 {
 
 	chanAnn := &lnwire.ChannelAnnouncement1{
@@ -608,18 +632,18 @@ func (fn *fuzzNetwork) createChannelAnnouncement(peer *gossipPeer,
 		Features:       testFeatures,
 	}
 
-	copy(chanAnn.NodeID1[:], peer.lnPrivKey.PubKey().SerializeCompressed())
+	copy(chanAnn.NodeID1[:], peer1.lnPrivKey.PubKey().SerializeCompressed())
 	copy(
 		chanAnn.NodeID2[:],
-		fn.selfLNPrivKey.PubKey().SerializeCompressed(),
+		peer2.lnPrivKey.PubKey().SerializeCompressed(),
 	)
 	copy(
 		chanAnn.BitcoinKey1[:],
-		peer.btcPrivKey.PubKey().SerializeCompressed(),
+		peer1.btcPrivKey.PubKey().SerializeCompressed(),
 	)
 	copy(
 		chanAnn.BitcoinKey2[:],
-		fn.selfBtcPrivKey.PubKey().SerializeCompressed(),
+		peer2.btcPrivKey.PubKey().SerializeCompressed(),
 	)
 
 	return chanAnn
@@ -627,32 +651,83 @@ func (fn *fuzzNetwork) createChannelAnnouncement(peer *gossipPeer,
 
 // signChannelAnnouncement signs the channel announcement with all required
 // signatures (node and bitcoin keys for both parties).
-func (fn *fuzzNetwork) signChannelAnnouncement(peer *gossipPeer,
+func (fn *fuzzNetwork) signChannelAnnouncement(peer1, peer2 *gossipPeer,
 	chanAnn *lnwire.ChannelAnnouncement1) {
 
-	signer := mock.SingleSigner{Privkey: peer.lnPrivKey}
+	signer := mock.SingleSigner{Privkey: peer1.lnPrivKey}
 	sig, err := netann.SignAnnouncement(&signer, testKeyLoc, chanAnn)
 	require.NoError(fn.t, err)
 	chanAnn.NodeSig1, err = lnwire.NewSigFromSignature(sig)
 	require.NoError(fn.t, err)
 
-	signer = mock.SingleSigner{Privkey: fn.selfLNPrivKey}
+	signer = mock.SingleSigner{Privkey: peer2.lnPrivKey}
 	sig, err = netann.SignAnnouncement(&signer, testKeyLoc, chanAnn)
 	require.NoError(fn.t, err)
 	chanAnn.NodeSig2, err = lnwire.NewSigFromSignature(sig)
 	require.NoError(fn.t, err)
 
-	signer = mock.SingleSigner{Privkey: peer.btcPrivKey}
+	signer = mock.SingleSigner{Privkey: peer1.btcPrivKey}
 	sig, err = netann.SignAnnouncement(&signer, testKeyLoc, chanAnn)
 	require.NoError(fn.t, err)
 	chanAnn.BitcoinSig1, err = lnwire.NewSigFromSignature(sig)
 	require.NoError(fn.t, err)
 
-	signer = mock.SingleSigner{Privkey: fn.selfBtcPrivKey}
+	signer = mock.SingleSigner{Privkey: peer2.btcPrivKey}
 	sig, err = netann.SignAnnouncement(&signer, testKeyLoc, chanAnn)
 	require.NoError(fn.t, err)
 	chanAnn.BitcoinSig2, err = lnwire.NewSigFromSignature(sig)
 	require.NoError(fn.t, err)
+}
+
+// setupMockChainForChannel mocks the chain backend for a given ShortChannelID
+// by providing the expected block hash and a funding transaction, allowing the
+// channel announcement to pass on-chain checks.
+func (fn *fuzzNetwork) setupMockChainForChannel(peer1, peer2 *gossipPeer,
+	scid lnwire.ShortChannelID) {
+
+	fn.t.Helper()
+
+	// Mock the block hash lookup for the given block height to ensure the
+	// channel's SCID can be resolved by the gossiper.
+	fn.chain.On("GetBlockHash", int64(scid.BlockHeight)).
+		Return(&chainhash.Hash{}, nil).Once()
+
+	// Mock the block retrieval to return a block containing the funding
+	// transaction.
+	_, tx, err := input.GenFundingPkScript(
+		peer1.lnPrivKey.PubKey().SerializeCompressed(),
+		peer2.lnPrivKey.PubKey().SerializeCompressed(),
+		int64(1000),
+	)
+	require.NoError(fn.t, err)
+
+	fundingTx := wire.NewMsgTx(2)
+	fundingTx.TxOut = append(fundingTx.TxOut, tx)
+	fundingBlock := &wire.MsgBlock{Transactions: []*wire.MsgTx{fundingTx}}
+
+	fn.chain.On("GetBlock", &chainhash.Hash{}).
+		Return(fundingBlock, nil).Once()
+
+	// Mock the UTXO lookup for the funding outpoint to simulate an
+	// unspent output, allowing funding validation to succeed.
+	chanPoint := &wire.OutPoint{
+		Hash:  fundingTx.TxHash(),
+		Index: uint32(scid.TxPosition),
+	}
+
+	var tapscriptRoot fnopt.Option[chainhash.Hash]
+	fundingPkScript, err := makeFundingScript(
+		peer1.btcPrivKey.PubKey().SerializeCompressed(),
+		peer2.btcPrivKey.PubKey().SerializeCompressed(),
+		testFeatures,
+		tapscriptRoot,
+	)
+	require.NoError(fn.t, err)
+
+	fn.chain.On(
+		"GetUtxo", chanPoint, fundingPkScript, scid.BlockHeight,
+		tmock.Anything,
+	).Return(tx, nil).Once()
 }
 
 // sendRemoteChannelAnnouncement creates and processes a remote channel
@@ -660,26 +735,32 @@ func (fn *fuzzNetwork) signChannelAnnouncement(peer *gossipPeer,
 func (fn *fuzzNetwork) sendRemoteChannelAnnouncement(offset int) int {
 	fn.t.Helper()
 
-	if !hasEnoughData(fn.data, offset, 10) {
+	if !hasEnoughData(fn.data, offset, 6) {
 		return len(fn.data)
 	}
 
-	peer := fn.selectPeer(fn.data[offset+1])
-	if peer == nil {
+	peer1 := fn.selectPeer(fn.data[offset+1])
+	if peer1 == nil {
 		return offset + 1
 	}
 
-	scid := lnwire.NewShortChanIDFromInt(getUint64(
-		fn.data[offset+2 : offset+10],
-	))
+	peer2 := fn.selectPeer(fn.data[offset+2])
+	if peer2 == nil {
+		return offset + 2
+	}
 
-	chanAnn := fn.createChannelAnnouncement(peer, scid)
-	fn.signChannelAnnouncement(peer, chanAnn)
+	bh := uint32(fn.data[offset+3])<<16 | uint32(fn.data[offset+4])<<8 |
+		uint32(fn.data[offset+5])
+	scid := lnwire.ShortChannelID{BlockHeight: bh}
+	fn.setupMockChainForChannel(peer1, peer2, scid)
 
-	malformedMsg, offset := fn.maybeMalformMessage(chanAnn, offset+10)
+	chanAnn := fn.createChannelAnnouncement(peer1, peer2, scid)
+	fn.signChannelAnnouncement(peer1, peer2, chanAnn)
+
+	malformedMsg, offset := fn.maybeMalformMessage(chanAnn, offset+6)
 
 	fn.gossiper.ProcessRemoteAnnouncement(
-		fn.t.Context(), malformedMsg, peer.connection,
+		fn.t.Context(), malformedMsg, peer1.connection,
 	)
 
 	return offset
@@ -752,14 +833,23 @@ func (fn *fuzzNetwork) sendRemoteAnnounceSignatures(offset int) int {
 		return offset + 1
 	}
 
+	self := &gossipPeer{
+		connection: &mockPeer{
+			fn.selfLNPrivKey.PubKey(), nil, nil,
+			atomic.Bool{}},
+		lnPrivKey:  fn.selfLNPrivKey,
+		btcPrivKey: fn.selfBtcPrivKey,
+	}
+
+	// TODO: Give isse here?
 	scid := lnwire.NewShortChanIDFromInt(getUint64(
 		fn.data[offset+2 : offset+10],
 	))
 	var chanID [32]byte
 	copy(chanID[:], fn.data[offset+10:offset+42])
 
-	chanAnn := fn.createChannelAnnouncement(peer, scid)
-	fn.signChannelAnnouncement(peer, chanAnn)
+	chanAnn := fn.createChannelAnnouncement(peer, self, scid)
+	fn.signChannelAnnouncement(peer, self, chanAnn)
 
 	annSign := &lnwire.AnnounceSignatures1{
 		ChannelID:        chanID,
