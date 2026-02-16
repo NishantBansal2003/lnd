@@ -690,8 +690,8 @@ func (fn *fuzzNetwork) setupMockChainForChannel(peer1, peer2 *gossipPeer,
 	fn.t.Helper()
 
 	_, tx, err := input.GenFundingPkScript(
-		peer1.lnPrivKey.PubKey().SerializeCompressed(),
-		peer2.lnPrivKey.PubKey().SerializeCompressed(),
+		peer1.btcPrivKey.PubKey().SerializeCompressed(),
+		peer2.btcPrivKey.PubKey().SerializeCompressed(),
 		int64(1000),
 	)
 	require.NoError(fn.t, err)
