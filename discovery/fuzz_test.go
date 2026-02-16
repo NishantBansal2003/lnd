@@ -465,7 +465,7 @@ func (fn *fuzzNetwork) maybeMalformMessage(msg lnwire.Message,
 			fn.chain.On("GetBlockHash", int64(scid.BlockHeight)).
 				Return(nil, fmt.Errorf("block not found")).
 				Once()
-			fn.chain.On("GetBlock", &chainhash.Hash{0xFF}).
+			fn.chain.On("GetBlock", tmock.Anything).
 				Return(nil, fmt.Errorf("block not found")).
 				Once()
 			fn.chain.On(
@@ -689,13 +689,6 @@ func (fn *fuzzNetwork) setupMockChainForChannel(peer1, peer2 *gossipPeer,
 
 	fn.t.Helper()
 
-	// Mock the block hash lookup for the given block height to ensure the
-	// channel's SCID can be resolved by the gossiper.
-	fn.chain.On("GetBlockHash", int64(scid.BlockHeight)).
-		Return(&chainhash.Hash{}, nil).Once()
-
-	// Mock the block retrieval to return a block containing the funding
-	// transaction.
 	_, tx, err := input.GenFundingPkScript(
 		peer1.lnPrivKey.PubKey().SerializeCompressed(),
 		peer2.lnPrivKey.PubKey().SerializeCompressed(),
@@ -705,9 +698,22 @@ func (fn *fuzzNetwork) setupMockChainForChannel(peer1, peer2 *gossipPeer,
 
 	fundingTx := wire.NewMsgTx(2)
 	fundingTx.TxOut = append(fundingTx.TxOut, tx)
+
+	// We will use the same hash for both the block and the funding
+	// transaction to ensure that if the gossiper searches for the
+	// transaction, it will definitely find it using this technique.
+	chainHash := fundingTx.TxHash()
+
+	// Mock the block hash lookup for the given block height to ensure the
+	// channel's SCID can be resolved by the gossiper.
+	fn.chain.On("GetBlockHash", int64(scid.BlockHeight)).
+		Return(&chainHash, nil).Once()
+
+	// Mock the block retrieval to return a block containing the funding
+	// transaction.
 	fundingBlock := &wire.MsgBlock{Transactions: []*wire.MsgTx{fundingTx}}
 
-	fn.chain.On("GetBlock", &chainhash.Hash{}).
+	fn.chain.On("GetBlock", &chainHash).
 		Return(fundingBlock, nil).Once()
 
 	// Mock the UTXO lookup for the funding outpoint to simulate an
