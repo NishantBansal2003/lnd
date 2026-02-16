@@ -463,9 +463,11 @@ func (fn *fuzzNetwork) maybeMalformMessage(msg lnwire.Message,
 			// Since the peer provided a malformed SCID, the local
 			// on-chain lookups should fail.
 			fn.chain.On("GetBlockHash", int64(scid.BlockHeight)).
-				Return(&chainhash.Hash{0xFF}, nil).Once()
+				Return(nil, fmt.Errorf("block not found")).
+				Once()
 			fn.chain.On("GetBlock", &chainhash.Hash{0xFF}).
-				Return(&wire.MsgBlock{}, nil).Once()
+				Return(nil, fmt.Errorf("block not found")).
+				Once()
 			fn.chain.On(
 				"GetUtxo", tmock.Anything, tmock.Anything,
 				scid.BlockHeight, tmock.Anything,
@@ -899,7 +901,7 @@ func (fn *fuzzNetwork) sendRemoteQueryShortChanIDs(offset int) int {
 	}
 
 	queryShortChanIDs := &lnwire.QueryShortChanIDs{
-		ChainHash:    fn.gossiper.syncMgr.cfg.ChainHash,
+		ChainHash:    *chaincfg.MainNetParams.GenesisHash,
 		EncodingType: lnwire.EncodingSortedPlain,
 		ShortChanIDs: scidsList,
 	}
@@ -932,7 +934,7 @@ func (fn *fuzzNetwork) sendRemoteQueryChannelRange(offset int) int {
 	}
 
 	queryChannelRange := &lnwire.QueryChannelRange{
-		ChainHash:        fn.gossiper.syncMgr.cfg.ChainHash,
+		ChainHash:        *chaincfg.MainNetParams.GenesisHash,
 		FirstBlockHeight: getUint32(fn.data[offset+2 : offset+6]),
 		NumBlocks:        getUint32(fn.data[offset+6 : offset+10]),
 	}
@@ -964,15 +966,15 @@ func (fn *fuzzNetwork) sendRemoteReplyChannelRange(offset int) int {
 		return offset + 1
 	}
 
-	// Since the gossiper rejects the ReplyChannelRange message if the
-	// syncer state is not expecting it, we do the same here to avoid
-	// generating or sending the message further.
+	// To avoid filling up the gossip buffer and hanging the fuzz tests, we
+	// first check if gossipMsgs has capacity to handle the message. This is
+	// similar to the brontide message buffer: if the brontide buffer is
+	// full, it waits until space frees up. Here, we simply skip sending the
+	// message to reduce load on fuzz tests.
 	syncer, ok := fn.gossiper.syncMgr.GossipSyncer(peer.connection.PubKey())
 	require.True(fn.t, ok)
-	syncer.Lock()
-	syncState := syncer.syncState()
-	syncer.Unlock()
-	if syncState != waitingQueryRangeReply {
+
+	if len(syncer.gossipMsgs)+1 >= cap(syncer.gossipMsgs) {
 		return offset + 2
 	}
 
@@ -1030,7 +1032,7 @@ func (fn *fuzzNetwork) sendRemoteReplyChannelRange(offset int) int {
 	}
 
 	replyChannelRange := &lnwire.ReplyChannelRange{
-		ChainHash:        fn.gossiper.syncMgr.cfg.ChainHash,
+		ChainHash:        *chaincfg.MainNetParams.GenesisHash,
 		FirstBlockHeight: firstBlockHeight,
 		NumBlocks:        numBlocks,
 		ShortChanIDs:     scidsList,
@@ -1041,12 +1043,9 @@ func (fn *fuzzNetwork) sendRemoteReplyChannelRange(offset int) int {
 		replyChannelRange, currentOffset,
 	)
 
-	// Reply synchronously to peer queries to ensure they are processed
-	// even when the fuzz data ends, and to reduce goroutine dependencies
-	// and delays.
-	reply, ok := malformedMsg.(*lnwire.ReplyChannelRange)
-	require.True(fn.t, ok)
-	_ = syncer.processChanRangeReply(fn.t.Context(), reply)
+	fn.gossiper.ProcessRemoteAnnouncement(
+		fn.t.Context(), malformedMsg, peer.connection,
+	)
 
 	return offset
 }
@@ -1056,7 +1055,7 @@ func (fn *fuzzNetwork) sendRemoteReplyChannelRange(offset int) int {
 func (fn *fuzzNetwork) sendRemoteReplyShortChanIDsEnd(offset int) int {
 	fn.t.Helper()
 
-	if !hasEnoughData(fn.data, offset, 2) {
+	if !hasEnoughData(fn.data, offset, 3) {
 		return len(fn.data)
 	}
 
@@ -1065,22 +1064,28 @@ func (fn *fuzzNetwork) sendRemoteReplyShortChanIDsEnd(offset int) int {
 		return offset + 1
 	}
 
-	// Since the gossiper rejects the ReplyChannelRange message if the
-	// syncer state is not expecting it, we do the same here to avoid
-	// generating or sending the message further.
+	// To avoid filling up the gossip buffer and hanging the fuzz tests, we
+	// first check if gossipMsgs has capacity to handle the message. This is
+	// similar to the brontide message buffer: if the brontide buffer is
+	// full, it waits until space frees up. Here, we simply skip sending the
+	// message to reduce load on fuzz tests.
 	syncer, ok := fn.gossiper.syncMgr.GossipSyncer(peer.connection.PubKey())
 	require.True(fn.t, ok)
-	syncer.Lock()
-	syncState := syncer.syncState()
-	syncer.Unlock()
-	if syncState != waitingQueryChanReply {
+
+	if len(syncer.gossipMsgs)+1 >= cap(syncer.gossipMsgs) {
 		return offset + 2
 	}
 
-	// Reply synchronously to peer queries to ensure they are processed
-	// even when the fuzz data ends, and to reduce goroutine dependencies
-	// and delays.
-	syncer.setSyncState(queryNewChannels)
+	replyScidEnd := lnwire.ReplyShortChanIDsEnd{
+		ChainHash: *chaincfg.MainNetParams.GenesisHash,
+		Complete:  fn.data[offset+2],
+	}
+
+	malformedMsg, offset := fn.maybeMalformMessage(&replyScidEnd, offset+3)
+
+	fn.gossiper.ProcessRemoteAnnouncement(
+		fn.t.Context(), malformedMsg, peer.connection,
+	)
 
 	return offset
 }
@@ -1100,7 +1105,7 @@ func (fn *fuzzNetwork) sendRemoteGossipTimestampRange(offset int) int {
 	}
 
 	gossipTimestampRange := &lnwire.GossipTimestampRange{
-		ChainHash:      fn.gossiper.syncMgr.cfg.ChainHash,
+		ChainHash:      *chaincfg.MainNetParams.GenesisHash,
 		FirstTimestamp: getUint32(fn.data[offset+2 : offset+6]),
 		TimestampRange: getUint32(fn.data[offset+6 : offset+10]),
 		FirstBlockHeight: tlv.SomeRecordT(
