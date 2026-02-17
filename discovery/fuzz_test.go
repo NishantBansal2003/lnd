@@ -832,7 +832,7 @@ func (fn *fuzzNetwork) sendRemoteChannelUpdate(offset int) int {
 func (fn *fuzzNetwork) sendRemoteAnnounceSignatures(offset int) int {
 	fn.t.Helper()
 
-	if !hasEnoughData(fn.data, offset, 42) {
+	if !hasEnoughData(fn.data, offset, 38) {
 		return len(fn.data)
 	}
 
@@ -849,15 +849,32 @@ func (fn *fuzzNetwork) sendRemoteAnnounceSignatures(offset int) int {
 		btcPrivKey: fn.selfBtcPrivKey,
 	}
 
-	// TODO: Give isse here?
-	scid := lnwire.NewShortChanIDFromInt(getUint64(
-		fn.data[offset+2 : offset+10],
-	))
+	bh := uint32(fn.data[offset+2])<<16 | uint32(fn.data[offset+3])<<8 |
+		uint32(fn.data[offset+4])
+	scid := lnwire.ShortChannelID{BlockHeight: bh}
 	var chanID [32]byte
-	copy(chanID[:], fn.data[offset+10:offset+42])
+	copy(chanID[:], fn.data[offset+5:offset+37])
 
 	chanAnn := fn.createChannelAnnouncement(peer, self, scid)
 	fn.signChannelAnnouncement(peer, self, chanAnn)
+
+	// We will conditionally send the opposite side of the proof from our
+	// local node.
+	if fn.data[offset+37]%2 == 0 {
+		fn.setupMockChainForChannel(self, peer, scid)
+		fn.gossiper.ProcessLocalAnnouncement(chanAnn)
+
+		// Also send our local AnnounceSignatures so that when the
+		// remote peer sends theirs, both halves will be available for
+		// assembly.
+		annSign := &lnwire.AnnounceSignatures1{
+			ChannelID:        chanID,
+			ShortChannelID:   scid,
+			NodeSignature:    chanAnn.NodeSig2,
+			BitcoinSignature: chanAnn.BitcoinSig2,
+		}
+		fn.gossiper.ProcessLocalAnnouncement(annSign)
+	}
 
 	annSign := &lnwire.AnnounceSignatures1{
 		ChannelID:        chanID,
@@ -866,7 +883,7 @@ func (fn *fuzzNetwork) sendRemoteAnnounceSignatures(offset int) int {
 		BitcoinSignature: chanAnn.BitcoinSig1,
 	}
 
-	malformedMsg, offset := fn.maybeMalformMessage(annSign, offset+42)
+	malformedMsg, offset := fn.maybeMalformMessage(annSign, offset+38)
 
 	fn.gossiper.ProcessRemoteAnnouncement(
 		fn.t.Context(), malformedMsg, peer.connection,
@@ -1045,6 +1062,19 @@ func (fn *fuzzNetwork) sendRemoteReplyChannelRange(offset int) int {
 		Timestamps:       timeStamps,
 		Complete:         complete,
 	}
+
+	// Conditionally set up the syncer state to simulate that we sent a
+	// query and are waiting for a reply.
+	if hasEnoughData(fn.data, currentOffset, 1) &&
+		fn.data[currentOffset]%2 == 0 {
+		syncer.curQueryRangeMsg = &lnwire.QueryChannelRange{
+			ChainHash:        replyChannelRange.ChainHash,
+			FirstBlockHeight: replyChannelRange.FirstBlockHeight,
+			NumBlocks:        replyChannelRange.NumBlocks,
+		}
+		currentOffset++
+	}
+
 	malformedMsg, offset := fn.maybeMalformMessage(
 		replyChannelRange, currentOffset,
 	)
