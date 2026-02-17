@@ -861,8 +861,11 @@ func (fn *fuzzNetwork) sendRemoteAnnounceSignatures(offset int) int {
 	// We will conditionally send the opposite side of the proof from our
 	// local node.
 	if fn.data[offset+37]%2 == 0 {
-		fn.setupMockChainForChannel(self, peer, scid)
-		fn.gossiper.ProcessLocalAnnouncement(chanAnn)
+		fn.setupMockChainForChannel(peer, self, scid)
+		select {
+		case <-fn.gossiper.ProcessLocalAnnouncement(chanAnn):
+		case <-fn.t.Context().Done():
+		}
 
 		// Also send our local AnnounceSignatures so that when the
 		// remote peer sends theirs, both halves will be available for
@@ -873,7 +876,10 @@ func (fn *fuzzNetwork) sendRemoteAnnounceSignatures(offset int) int {
 			NodeSignature:    chanAnn.NodeSig2,
 			BitcoinSignature: chanAnn.BitcoinSig2,
 		}
-		fn.gossiper.ProcessLocalAnnouncement(annSign)
+		select {
+		case <-fn.gossiper.ProcessLocalAnnouncement(annSign):
+		case <-fn.t.Context().Done():
+		}
 	}
 
 	annSign := &lnwire.AnnounceSignatures1{
