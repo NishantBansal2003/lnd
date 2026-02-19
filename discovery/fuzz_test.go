@@ -15,6 +15,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/channeldb"
 	fnopt "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/graph"
 	graphdb "github.com/lightningnetwork/lnd/graph/db"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -92,7 +93,7 @@ type fuzzNetwork struct {
 	gossiper    *AuthenticatedGossiper
 	chain       *lnmock.MockChain
 	notifier    *mockNotifier
-	blockHeight int32
+	blockHeight *int32
 
 	selfBtcPrivKey *btcec.PrivateKey
 	selfLNPrivKey  *btcec.PrivateKey
@@ -100,7 +101,7 @@ type fuzzNetwork struct {
 }
 
 // createGossiper creates and starts a gossiper for fuzz testing.
-func createGossiper(t *testing.T, blockHeight int32,
+func createGossiper(t *testing.T, blockHeight *int32,
 	selfPrivKey *btcec.PrivateKey) (*AuthenticatedGossiper,
 	*lnmock.MockChain, *mockNotifier) {
 
@@ -108,12 +109,28 @@ func createGossiper(t *testing.T, blockHeight int32,
 
 	chain := &lnmock.MockChain{}
 
+	// Return blockHeight dynamically so each call reflects the latest
+	// value.
+	chain.On("GetBestBlock").
+		Return(func() (*chainhash.Hash, int32, error) {
+			return &chainhash.Hash{}, *blockHeight, nil
+		})
+
 	graphDb := graphdb.MakeTestGraph(t, graphdb.WithUseGraphCache(true))
 	channelSeries := NewChanSeries(graphDb)
 
 	notifier := newMockNotifier()
 
-	graphBuilder := newMockRouter(t, uint32(blockHeight))
+	graphBuilder, err := graph.NewBuilder(&graph.Config{
+		Graph:              graphDb,
+		Chain:              chain,
+		ChainView:          &noopChainView{},
+		ChannelPruneExpiry: graph.DefaultChannelPruneExpiry,
+		IsAlias: func(lnwire.ShortChannelID) bool {
+			return false
+		},
+	})
+	require.NoError(t, err)
 
 	db := channeldb.OpenForTesting(t, t.TempDir())
 	waitingProofStore, err := channeldb.NewWaitingProofStore(db)
@@ -231,7 +248,7 @@ func setupFuzzNetwork(t *testing.T, data []byte) *fuzzNetwork {
 	lnPrivKey, _ := btcec.PrivKeyFromBytes(data[32:64])
 	blockHeight := getInt32(data[64:68]) % (blockHeightCap + 1)
 
-	gossiper, chain, notifier := createGossiper(t, blockHeight, lnPrivKey)
+	gossiper, chain, notifier := createGossiper(t, &blockHeight, lnPrivKey)
 
 	return &fuzzNetwork{
 		t:    t,
@@ -240,7 +257,7 @@ func setupFuzzNetwork(t *testing.T, data []byte) *fuzzNetwork {
 		gossiper:    gossiper,
 		chain:       chain,
 		notifier:    notifier,
-		blockHeight: blockHeight,
+		blockHeight: &blockHeight,
 
 		selfBtcPrivKey: btcPrivKey,
 		selfLNPrivKey:  lnPrivKey,
@@ -1069,18 +1086,6 @@ func (fn *fuzzNetwork) sendRemoteReplyChannelRange(offset int) int {
 		Complete:         complete,
 	}
 
-	// Conditionally set up the syncer state to simulate that we sent a
-	// query and are waiting for a reply.
-	if hasEnoughData(fn.data, currentOffset, 1) &&
-		fn.data[currentOffset]%2 == 0 {
-		syncer.curQueryRangeMsg = &lnwire.QueryChannelRange{
-			ChainHash:        replyChannelRange.ChainHash,
-			FirstBlockHeight: replyChannelRange.FirstBlockHeight,
-			NumBlocks:        replyChannelRange.NumBlocks,
-		}
-		currentOffset++
-	}
-
 	malformedMsg, offset := fn.maybeMalformMessage(
 		replyChannelRange, currentOffset,
 	)
@@ -1189,11 +1194,11 @@ func (fn *fuzzNetwork) udpateBlockHeight(offset int) int {
 		return len(fn.data)
 	}
 
-	fn.blockHeight = max(
+	*fn.blockHeight = max(
 		getInt32(fn.data[offset+1:offset+5])%(blockHeightCap+1),
-		fn.blockHeight,
+		*fn.blockHeight,
 	)
-	fn.notifier.notifyBlock(chainhash.Hash{}, uint32(fn.blockHeight))
+	fn.notifier.notifyBlock(chainhash.Hash{}, uint32(*fn.blockHeight))
 
 	return offset + 5
 }

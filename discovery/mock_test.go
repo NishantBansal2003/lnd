@@ -9,8 +9,10 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/wire"
+	graphdb "github.com/lightningnetwork/lnd/graph/db"
 	"github.com/lightningnetwork/lnd/lnpeer"
 	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/routing/chainview"
 	"github.com/lightningnetwork/lnd/ticker"
 )
 
@@ -214,3 +216,13 @@ func (n *noopTicker) Stop() {}
 func (n *noopTicker) Pause() {}
 
 func (n *noopTicker) Resume() {}
+
+type noopChainView struct {
+	chainview.FilteredChainView
+}
+
+func (n *noopChainView) UpdateFilter(ops []graphdb.EdgePoint,
+	updateHeight uint32) error {
+
+	return nil
+}
