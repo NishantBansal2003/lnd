@@ -533,6 +533,15 @@ func (fn *fuzzNetwork) maybeMalformMessage(msg lnwire.Message,
 			cursor += 64
 		}
 
+		// ShortChannelID
+		if canMutate(8) {
+			scid := lnwire.NewShortChanIDFromInt(
+				getUint64(fn.data[cursor : cursor+8]),
+			)
+			out.ShortChannelID = scid
+			cursor += 8
+		}
+
 		return &out, cursor
 
 	case *lnwire.QueryShortChanIDs:
@@ -565,6 +574,30 @@ func (fn *fuzzNetwork) maybeMalformMessage(msg lnwire.Message,
 			cursor += 32
 		}
 
+		// QueryOptions
+		if canMutate(1) {
+			iterations := int(fn.data[cursor])
+			var bits []lnwire.FeatureBit
+			cursor++
+
+			for range iterations {
+				if !canMutate(2) {
+					break
+				}
+
+				bits = append(bits, lnwire.FeatureBit(
+					getUint16(fn.data[cursor:cursor+2]),
+				))
+
+				cursor += 2
+			}
+
+			fv := lnwire.NewRawFeatureVector(bits...)
+			qopt := lnwire.QueryOptions(*fv)
+
+			out.QueryOptions = &qopt
+		}
+
 		return &out, cursor
 
 	case *lnwire.ReplyChannelRange:
@@ -576,6 +609,12 @@ func (fn *fuzzNetwork) maybeMalformMessage(msg lnwire.Message,
 			copy(cHash[:], fn.data[cursor:cursor+32])
 			out.ChainHash = cHash
 			cursor += 32
+		}
+
+		// EncodingType
+		if canMutate(1) {
+			out.EncodingType = lnwire.QueryEncoding(fn.data[cursor])
+			cursor++
 		}
 
 		return &out, cursor
@@ -795,7 +834,7 @@ func (fn *fuzzNetwork) sendRemoteChannelAnnouncement(offset int) int {
 func (fn *fuzzNetwork) sendRemoteChannelUpdate(offset int) int {
 	fn.t.Helper()
 
-	if !hasEnoughData(fn.data, offset, 49) {
+	if !hasEnoughData(fn.data, offset, 50) {
 		return len(fn.data)
 	}
 
@@ -816,17 +855,17 @@ func (fn *fuzzNetwork) sendRemoteChannelUpdate(offset int) int {
 		ChainHash:      *chaincfg.MainNetParams.GenesisHash,
 		ShortChannelID: scid,
 		Timestamp:      getUint32(fn.data[offset+18 : offset+22]),
-		MessageFlags:   lnwire.ChanUpdateRequiredMaxHtlc,
-		ChannelFlags:   lnwire.ChanUpdateChanFlags(fn.data[offset+22]),
-		TimeLockDelta:  getUint16(fn.data[offset+23 : offset+25]),
+		MessageFlags:   lnwire.ChanUpdateMsgFlags(fn.data[offset+22]),
+		ChannelFlags:   lnwire.ChanUpdateChanFlags(fn.data[offset+23]),
+		TimeLockDelta:  getUint16(fn.data[offset+24 : offset+26]),
 		HtlcMinimumMsat: lnwire.MilliSatoshi(getUint64(
-			fn.data[offset+25 : offset+33],
+			fn.data[offset+26 : offset+34],
 		)),
 		HtlcMaximumMsat: lnwire.MilliSatoshi(getUint64(
-			fn.data[offset+33 : offset+41],
+			fn.data[offset+34 : offset+42],
 		)),
-		FeeRate: getUint32(fn.data[offset+41 : offset+45]),
-		BaseFee: getUint32(fn.data[offset+45 : offset+49]),
+		FeeRate: getUint32(fn.data[offset+42 : offset+46]),
+		BaseFee: getUint32(fn.data[offset+46 : offset+50]),
 		InboundFee: tlv.SomeRecordT(
 			tlv.NewRecordT[tlv.TlvType55555](fee),
 		),
@@ -835,7 +874,7 @@ func (fn *fuzzNetwork) sendRemoteChannelUpdate(offset int) int {
 	err := signUpdate(peer.lnPrivKey, updateAnn)
 	require.NoError(fn.t, err)
 
-	malformedMsg, offset := fn.maybeMalformMessage(updateAnn, offset+49)
+	malformedMsg, offset := fn.maybeMalformMessage(updateAnn, offset+50)
 
 	fn.gossiper.ProcessRemoteAnnouncement(
 		fn.t.Context(), malformedMsg, peer.connection,
