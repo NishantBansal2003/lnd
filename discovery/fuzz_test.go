@@ -116,7 +116,10 @@ func createGossiper(t *testing.T, blockHeight *int32,
 			return &chainhash.Hash{}, *blockHeight, nil
 		})
 
-	graphDb := graphdb.MakeTestGraph(t, graphdb.WithUseGraphCache(true))
+	// We can use the mock channel series and graph builder, but there is a
+	// trade-off between RAM and CPU. For now, I prefer higher CPU usage to
+	// avoid unnecessary OOMs, which are worse than increased CPU usage.
+	graphDb := graphdb.MakeTestGraph(t)
 	channelSeries := NewChanSeries(graphDb)
 
 	notifier := newMockNotifier()
@@ -1242,6 +1245,23 @@ func (fn *fuzzNetwork) udpateBlockHeight(offset int) int {
 	return offset + 5
 }
 
+// waitForValidationSemaphore blocks until the validation semaphore is fully
+// restored, meaning all pending announcements have been processed. This
+// emulates serial announcement processing rather than spawning multiple
+// goroutines concurrently, which reduces stress on the fuzz tests and helps
+// identify bugs where the semaphore is never released due to a deadlock or
+// logic error.
+func (fn *fuzzNetwork) waitForValidationSemaphore() {
+	vb := fn.gossiper.vb
+	for len(vb.validationSemaphore) < cap(vb.validationSemaphore) {
+		select {
+		case <-fn.t.Context().Done():
+			return
+		default:
+		}
+	}
+}
+
 // runGossipStateMachine executes the gossip state machine with fuzz input data.
 func (fn *fuzzNetwork) runGossipStateMachine() {
 	fn.t.Helper()
@@ -1287,6 +1307,8 @@ func (fn *fuzzNetwork) runGossipStateMachine() {
 		case udpateBlockHeight:
 			offset = fn.udpateBlockHeight(offset)
 		}
+
+		fn.waitForValidationSemaphore()
 	}
 }
 
