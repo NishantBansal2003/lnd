@@ -919,6 +919,18 @@ func isLegacyReplyChannelRange(query *lnwire.QueryChannelRange,
 func (g *GossipSyncer) processChanRangeReply(_ context.Context,
 	msg *lnwire.ReplyChannelRange) error {
 
+	// Although we already verified that if a timestamp is provided, it is
+	// provided for each SCID, we still enforce this check here for
+	// additional safety. Without this check, a panic could occur if
+	// validation is missing in the Decode function.
+	if len(msg.Timestamps) != 0 &&
+		len(msg.Timestamps) != len(msg.ShortChanIDs) {
+
+		return fmt.Errorf("number of timestamps (%d) does not match "+
+			"number of SCIDs (%d)", len(msg.Timestamps),
+			len(msg.ShortChanIDs))
+	}
+
 	// isStale returns whether the timestamp is too far into the past.
 	isStale := func(timestamp time.Time) bool {
 		return time.Since(timestamp) > graph.DefaultChannelPruneExpiry
