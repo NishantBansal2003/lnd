@@ -14,6 +14,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/lightningnetwork/lnd/channeldb"
 	fnopt "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/graph"
@@ -46,7 +47,7 @@ var (
 
 const (
 	// total number of fuzz state actions.
-	numFuzzStates = 12
+	numFuzzStates = 13
 
 	// For the fuzz tests, cap the block height to roughly the year 2142.
 	blockHeightCap = 6990480
@@ -72,6 +73,21 @@ func getInt32(data []byte) int32 {
 	return int32(getUint32(data) % uint32(math.MaxInt32+1))
 }
 
+// ParsePrivKey parses raw private key bytes and returns the parsed private key,
+// along with a boolean indicating whether the provided bytes represent a valid
+// private key.
+//
+// NOTE: Ideally, this should be placed in btcd, but for now it is defined here.
+func ParsePrivKey(privKeyBytes []byte) (*secp256k1.PrivateKey, bool) {
+	var key secp256k1.ModNScalar
+	overflows := key.SetByteSlice(privKeyBytes)
+	if overflows || key.IsZero() {
+		return nil, false
+	}
+
+	return secp256k1.NewPrivateKey(&key), true
+}
+
 // fuzzState represents the different states in the gossip protocol operation.
 type fuzzState uint8
 
@@ -88,6 +104,7 @@ const (
 	gossipTimestampRangeReceived
 	replyShortChanIDsEndReceived
 	udpateBlockHeight
+	triggerHistoricalSync
 )
 
 // gossipPeer represents a mock peer along with its associated LN and BTC
@@ -272,8 +289,18 @@ func setupFuzzNetwork(t *testing.T, data []byte) *fuzzNetwork {
 		return nil
 	}
 
-	btcPrivKey, _ := btcec.PrivKeyFromBytes(data[0:32])
-	lnPrivKey, _ := btcec.PrivKeyFromBytes(data[32:64])
+	// We ensure that the private/public key is valid according to the
+	// secp256k1 curve so that there are no errors caused by an invalid key.
+	btcPrivKey, isValid := ParsePrivKey(data[0:32])
+	if !isValid {
+		return nil
+	}
+
+	lnPrivKey, isValid := ParsePrivKey(data[32:64])
+	if !isValid {
+		return nil
+	}
+
 	blockHeight := getInt32(data[64:68]) % (blockHeightCap + 1)
 
 	gossiper, chain, notifier := createGossiper(t, &blockHeight, lnPrivKey)
@@ -324,10 +351,17 @@ func (fn *fuzzNetwork) connectNewPeer(offset int) int {
 		return len(fn.data)
 	}
 
-	privKey, pubKey := btcec.PrivKeyFromBytes(fn.data[offset+1 : offset+33])
-	btcPrivKey, _ := btcec.PrivKeyFromBytes(fn.data[offset+33 : offset+65])
+	privKey, isValid := ParsePrivKey(fn.data[offset+1 : offset+33])
+	if !isValid {
+		return offset + 33
+	}
 
-	peer := &mockPeer{pubKey, nil, nil, atomic.Bool{}}
+	btcPrivKey, isValid := ParsePrivKey(fn.data[offset+33 : offset+65])
+	if !isValid {
+		return offset + 65
+	}
+
+	peer := &mockPeer{privKey.PubKey(), nil, nil, atomic.Bool{}}
 	fn.gossiper.InitSyncState(peer)
 
 	fn.peers = append(fn.peers, &gossipPeer{
@@ -1270,6 +1304,47 @@ func (fn *fuzzNetwork) udpateBlockHeight(offset int) int {
 	return offset + 5
 }
 
+// startHistoricalSync triggers a historical sync on a peer. This is implemented
+// as an explicit state transition so we can deterministically control when a
+// forced historical sync happens, instead of relying on time-based triggers or
+// randomly selected peers.
+func (fn *fuzzNetwork) startHistoricalSync(offset int) int {
+	fn.t.Helper()
+
+	if !hasEnoughData(fn.data, offset, 2) {
+		return len(fn.data)
+	}
+
+	peer := fn.selectPeer(fn.data[offset+1])
+	if peer == nil {
+		return offset + 1
+	}
+
+	syncer, ok := fn.gossiper.syncMgr.GossipSyncer(peer.connection.PubKey())
+	require.True(fn.t, ok)
+
+	// We only send the request if the syncer is in chansSynced state to
+	// ensure the internal state machine remains consistent.
+	if syncer.syncState() == chansSynced {
+		done := make(chan struct{})
+
+		select {
+		case syncer.historicalSyncReqs <- &historicalSyncReq{
+			doneChan: done,
+		}:
+
+			select {
+			case <-done:
+			case <-fn.t.Context().Done():
+			}
+
+		default:
+		}
+	}
+
+	return offset + 2
+}
+
 // waitForValidationSemaphore blocks until the validation semaphore is fully
 // restored, meaning all pending announcements have been processed. This
 // emulates serial announcement processing rather than spawning multiple
@@ -1331,6 +1406,9 @@ func (fn *fuzzNetwork) runGossipStateMachine() {
 
 		case udpateBlockHeight:
 			offset = fn.udpateBlockHeight(offset)
+
+		case triggerHistoricalSync:
+			offset = fn.startHistoricalSync(offset)
 		}
 
 		fn.waitForValidationSemaphore()
