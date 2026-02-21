@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"sync/atomic"
@@ -17,6 +18,7 @@ import (
 	fnopt "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/graph"
 	graphdb "github.com/lightningnetwork/lnd/graph/db"
+	"github.com/lightningnetwork/lnd/graph/db/models"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnmock"
@@ -28,6 +30,18 @@ import (
 	"github.com/lightningnetwork/lnd/tlv"
 	tmock "github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+)
+
+var (
+	testRBytes, _ = hex.DecodeString("8ce2bc69281ce27da07e6683571319d18e" +
+		"949ddfa2965fb6caa1bf0314f882d7")
+	testSBytes, _ = hex.DecodeString("299105481d63e0f4bc2a88121167221b67" +
+		"00d72a0ead154c03be696a292d24ae")
+	testRScalar = new(btcec.ModNScalar)
+	testSScalar = new(btcec.ModNScalar)
+	_           = testRScalar.SetByteSlice(testRBytes)
+	_           = testSScalar.SetByteSlice(testSBytes)
+	testSig     = ecdsa.NewSignature(testRScalar, testSScalar)
 )
 
 const (
@@ -133,6 +147,17 @@ func createGossiper(t *testing.T, blockHeight *int32,
 			return false
 		},
 	})
+	require.NoError(t, err)
+
+	pubKey := route.NewVertex(selfPrivKey.PubKey())
+	dbNode := models.NewV1Node(pubKey, &models.NodeV1Fields{
+		AuthSigBytes: testSig.Serialize(),
+		LastUpdate:   time.Now(),
+		Addresses:    testAddrs,
+		Alias:        "kek" + hex.EncodeToString(pubKey[:]),
+		Features:     testFeatures,
+	})
+	err = graphDb.SetSourceNode(t.Context(), dbNode)
 	require.NoError(t, err)
 
 	db := channeldb.OpenForTesting(t, t.TempDir())
