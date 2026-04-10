@@ -1,10 +1,15 @@
 package discovery
 
 import (
+	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"image/color"
 	"math"
+	"net"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,7 +19,6 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/lightningnetwork/lnd/channeldb"
 	fnopt "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/graph"
@@ -33,24 +37,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var (
-	testRBytes, _ = hex.DecodeString("8ce2bc69281ce27da07e6683571319d18e" +
-		"949ddfa2965fb6caa1bf0314f882d7")
-	testSBytes, _ = hex.DecodeString("299105481d63e0f4bc2a88121167221b67" +
-		"00d72a0ead154c03be696a292d24ae")
-	testRScalar = new(btcec.ModNScalar)
-	testSScalar = new(btcec.ModNScalar)
-	_           = testRScalar.SetByteSlice(testRBytes)
-	_           = testSScalar.SetByteSlice(testSBytes)
-	testSig     = ecdsa.NewSignature(testRScalar, testSScalar)
-)
-
 const (
-	// total number of fuzz state actions.
-	numFuzzStates = 13
-
 	// For the fuzz tests, cap the block height to roughly the year 2142.
 	blockHeightCap = 6990480
+
+	// Maximum limits on channel capacity.
+	maxFundingAmt = lnwire.MilliSatoshi(16777215000)
 )
 
 // getUint64 extracts a uint64 from a byte slice.
@@ -63,12 +55,12 @@ func getUint32(data []byte) uint32 {
 	return binary.BigEndian.Uint32(data)
 }
 
-// getUint16 extracts a uint32 from a byte slice.
+// getUint16 extracts a uint16 from a byte slice.
 func getUint16(data []byte) uint16 {
 	return binary.BigEndian.Uint16(data)
 }
 
-// getInt64 extracts a non-negative int32 from a byte slice.
+// getInt32 extracts a non-negative int32 from a byte slice.
 func getInt32(data []byte) int32 {
 	return int32(getUint32(data) % uint32(math.MaxInt32+1))
 }
@@ -78,14 +70,14 @@ func getInt32(data []byte) int32 {
 // private key.
 //
 // NOTE: Ideally, this should be placed in btcd, but for now it is defined here.
-func ParsePrivKey(privKeyBytes []byte) (*secp256k1.PrivateKey, bool) {
-	var key secp256k1.ModNScalar
+func ParsePrivKey(privKeyBytes []byte) (*btcec.PrivateKey, bool) {
+	var key btcec.ModNScalar
 	overflows := key.SetByteSlice(privKeyBytes)
 	if overflows || key.IsZero() {
 		return nil, false
 	}
 
-	return secp256k1.NewPrivateKey(&key), true
+	return btcec.PrivKeyFromScalar(&key), true
 }
 
 // fuzzState represents the different states in the gossip protocol operation.
@@ -103,8 +95,9 @@ const (
 	replyChannelRangeReceived
 	gossipTimestampRangeReceived
 	replyShortChanIDsEndReceived
-	udpateBlockHeight
+	updateBlockHeight
 	triggerHistoricalSync
+	numFuzzStates
 )
 
 // gossipPeer represents a mock peer along with its associated LN and BTC
@@ -115,16 +108,21 @@ type gossipPeer struct {
 	btcPrivKey *btcec.PrivateKey
 }
 
+// scidLookup returns the highest known ShortChannelID in the channel graph.
+type scidLookup func(context.Context, lnwire.GossipVersion) (uint64, error)
+
 // fuzzNetwork represents a test network harness used to fuzz the gossip
 // subsystem between the local node and remote peers.
 type fuzzNetwork struct {
-	t    *testing.T
-	data []byte
+	t      *testing.T
+	data   []byte
+	offset int
 
-	gossiper    *AuthenticatedGossiper
-	chain       *lnmock.MockChain
-	notifier    *mockNotifier
-	blockHeight *int32
+	gossiper     *AuthenticatedGossiper
+	chain        *lnmock.MockChain
+	notifier     *mockNotifier
+	blockHeight  *int32
+	getKnownSCID scidLookup
 
 	selfBtcPrivKey *btcec.PrivateKey
 	selfLNPrivKey  *btcec.PrivateKey
@@ -134,9 +132,7 @@ type fuzzNetwork struct {
 // createGossiper creates and starts a gossiper for fuzz testing.
 func createGossiper(t *testing.T, blockHeight *int32,
 	selfPrivKey *btcec.PrivateKey) (*AuthenticatedGossiper,
-	*lnmock.MockChain, *mockNotifier) {
-
-	t.Helper()
+	*lnmock.MockChain, *mockNotifier, scidLookup) {
 
 	chain := &lnmock.MockChain{}
 
@@ -170,11 +166,10 @@ func createGossiper(t *testing.T, blockHeight *int32,
 
 	pubKey := route.NewVertex(selfPrivKey.PubKey())
 	dbNode := models.NewV1Node(pubKey, &models.NodeV1Fields{
-		AuthSigBytes: testSig.Serialize(),
-		LastUpdate:   time.Now(),
-		Addresses:    testAddrs,
-		Alias:        "kek" + hex.EncodeToString(pubKey[:]),
-		Features:     testFeatures,
+		LastUpdate: time.Now(),
+		Addresses:  testAddrs,
+		Alias:      "kek" + hex.EncodeToString(pubKey[:]),
+		Features:   testFeatures,
 	})
 	err = graphDb.SetSourceNode(t.Context(), dbNode)
 	require.NoError(t, err)
@@ -279,15 +274,13 @@ func createGossiper(t *testing.T, blockHeight *int32,
 	// broadcast.
 	gossiper.syncMgr.markGraphSynced()
 
-	return gossiper, chain, notifier
+	return gossiper, chain, notifier, graphDb.HighestChanID
 }
 
 // setupFuzzNetwork initializes a new fuzz testing environment for gossip
 // network testing.
 func setupFuzzNetwork(t *testing.T, data []byte) *fuzzNetwork {
-	t.Helper()
-
-	if !hasEnoughData(data, 0, 68) {
+	if len(data) < 68 {
 		return nil
 	}
 
@@ -305,16 +298,20 @@ func setupFuzzNetwork(t *testing.T, data []byte) *fuzzNetwork {
 
 	blockHeight := getInt32(data[64:68]) % (blockHeightCap + 1)
 
-	gossiper, chain, notifier := createGossiper(t, &blockHeight, lnPrivKey)
+	gossiper, chain, notifier, getKnownSCID := createGossiper(
+		t, &blockHeight, lnPrivKey,
+	)
 
 	return &fuzzNetwork{
-		t:    t,
-		data: data[68:],
+		t:      t,
+		data:   data,
+		offset: 68,
 
-		gossiper:    gossiper,
-		chain:       chain,
-		notifier:    notifier,
-		blockHeight: &blockHeight,
+		gossiper:     gossiper,
+		chain:        chain,
+		notifier:     notifier,
+		blockHeight:  &blockHeight,
+		getKnownSCID: getKnownSCID,
 
 		selfBtcPrivKey: btcPrivKey,
 		selfLNPrivKey:  lnPrivKey,
@@ -322,40 +319,104 @@ func setupFuzzNetwork(t *testing.T, data []byte) *fuzzNetwork {
 	}
 }
 
+// getBytes returns the next required bytes from the fuzz input and advances the
+// offset.
+func (fn *fuzzNetwork) getBytes(required int) []byte {
+	b := fn.data[fn.offset : fn.offset+required]
+	fn.offset += required
+
+	return b
+}
+
+// getVarBytes reads a 2-byte length-prefixed byte slice from the fuzz input,
+// returning the length prefix and payload concatenated, or nil if exhausted.
+func (fn *fuzzNetwork) getVarBytes() []byte {
+	if !fn.hasEnoughData(2) {
+		return nil
+	}
+
+	lengthBytes := fn.getBytes(2)
+	length := int(getUint16(lengthBytes))
+
+	if !fn.hasEnoughData(length) {
+		return nil
+	}
+
+	return append(lengthBytes, fn.getBytes(length)...)
+}
+
+// genUTXOLookupSCID generates a ShortChannelID used by the gossiper to validate
+// the funding transaction from a ChannelAnnouncement.
+//
+// We set TxIndex and TxPosition to 0 because, during verification, the gossiper
+// uses these as indices to locate the funding transaction and its output within
+// the block. By keeping them at 0, we avoid the need to populate unnecessary
+// transactions in the block.
+func (fn *fuzzNetwork) genUTXOLookupSCID() lnwire.ShortChannelID {
+	bh := uint32(fn.getBytes(1)[0])<<16 | uint32(fn.getBytes(1)[0])<<8 |
+		uint32(fn.getBytes(1)[0])
+
+	return lnwire.ShortChannelID{BlockHeight: bh}
+}
+
+// getFeatures reads a length-prefixed RawFeatureVector from fuzz input.
+func (fn *fuzzNetwork) getFeatures() *lnwire.RawFeatureVector {
+	fv := lnwire.NewRawFeatureVector()
+	buf := bytes.NewBuffer(fn.getVarBytes())
+	_ = lnwire.ReadElement(buf, &fv)
+
+	return fv
+}
+
+// getAddresses reads a length-prefixed slice of net.Addr from fuzz input.
+func (fn *fuzzNetwork) getAddresses() []net.Addr {
+	var addresses []net.Addr
+	buf := bytes.NewBuffer(fn.getVarBytes())
+	_ = lnwire.ReadElement(buf, &addresses)
+
+	return addresses
+}
+
 // hasEnoughData checks if there's sufficient data remaining.
-func hasEnoughData(data []byte, offset, required int) bool {
-	return offset+required <= len(data)
+func (fn *fuzzNetwork) hasEnoughData(required int) bool {
+	return fn.offset+required <= len(fn.data)
 }
 
 // selectPeer returns a peer from the network based on the selector byte.
 // Returns nil if the peer list is empty.
-func (fn *fuzzNetwork) selectPeer(selector byte) *gossipPeer {
-	fn.t.Helper()
-
+func (fn *fuzzNetwork) selectPeer() *gossipPeer {
 	if len(fn.peers) == 0 {
 		return nil
 	}
-	peerIndex := int(selector) % len(fn.peers)
+	peerIndex := int(fn.getBytes(1)[0]) % len(fn.peers)
 
 	return fn.peers[peerIndex]
 }
 
 // connectNewPeer creates a new peer connection and adds it to the network.
-func (fn *fuzzNetwork) connectNewPeer(offset int) int {
-	fn.t.Helper()
-
-	if !hasEnoughData(fn.data, offset, 65) {
-		return len(fn.data)
+func (fn *fuzzNetwork) connectNewPeer() {
+	if !fn.hasEnoughData(64) {
+		return
 	}
 
-	privKey, isValid := ParsePrivKey(fn.data[offset+1 : offset+33])
+	privKey, isValid := ParsePrivKey(fn.getBytes(32))
 	if !isValid {
-		return offset + 33
+		return
 	}
 
-	btcPrivKey, isValid := ParsePrivKey(fn.data[offset+33 : offset+65])
+	// If we already have a connection with this peer, we will not try to
+	// connect to it again. In production, if this happens, the SyncManager
+	// will silently drop the connection request.
+	_, ok := fn.gossiper.SyncManager().GossipSyncer(
+		route.Vertex(privKey.PubKey().SerializeCompressed()),
+	)
+	if ok {
+		return
+	}
+
+	btcPrivKey, isValid := ParsePrivKey(fn.getBytes(32))
 	if !isValid {
-		return offset + 65
+		return
 	}
 
 	peer := &mockPeer{privKey.PubKey(), nil, nil, atomic.Bool{}}
@@ -366,69 +427,51 @@ func (fn *fuzzNetwork) connectNewPeer(offset int) int {
 		lnPrivKey:  privKey,
 		btcPrivKey: btcPrivKey,
 	})
-
-	return offset + 65
 }
 
 // disconnectPeer removes a peer from the network based on fuzz data.
-func (fn *fuzzNetwork) disconnectPeer(offset int) int {
-	fn.t.Helper()
-
-	if !hasEnoughData(fn.data, offset, 2) {
-		return len(fn.data)
+func (fn *fuzzNetwork) disconnectPeer() {
+	if !fn.hasEnoughData(1) || len(fn.peers) == 0 {
+		return
 	}
 
-	peerToDisconnect := fn.selectPeer(fn.data[offset+1])
-	if peerToDisconnect == nil {
-		return offset + 1
-	}
+	peerIndex := int(fn.getBytes(1)[0]) % len(fn.peers)
+	peerToDisconnect := fn.peers[peerIndex]
 
 	fn.gossiper.PruneSyncState(peerToDisconnect.connection.PubKey())
 
-	// There is a possibility that we attempted to connect to the same peer
-	// multiple times, resulting in duplicate entries in the mock peer list.
-	// When removing a peer, we therefore filter out all entries that match
-	// the peer's public key.
-	var peerList []*gossipPeer
-	disconnectPubKey := peerToDisconnect.lnPrivKey.PubKey()
-	for _, peer := range fn.peers {
-		if !disconnectPubKey.IsEqual(peer.lnPrivKey.PubKey()) {
-			peerList = append(peerList, peer)
-		}
-	}
-	fn.peers = peerList
-
-	return offset + 2
+	// Remove the selected peer in the mock peer list.
+	fn.peers = append(fn.peers[:peerIndex], fn.peers[peerIndex+1:]...)
 }
 
 // maybeMalformMessage conditionally mutates an lnwire message using fuzzing
 // input data.
-func (fn *fuzzNetwork) maybeMalformMessage(msg lnwire.Message,
-	offset int) (lnwire.Message, int) {
-
-	fn.t.Helper()
-
-	if !hasEnoughData(fn.data, offset, 1) {
-		return msg, offset
+func (fn *fuzzNetwork) maybeMalformMessage(msg lnwire.Message) lnwire.Message {
+	if !fn.hasEnoughData(1) {
+		return msg
 	}
 
-	// Global selector.
-	cursor := offset
 	// skip malformation for even selector bytes.
-	if fn.data[cursor]%2 == 0 {
-		return msg, cursor + 1
+	if fn.getBytes(1)[0]%2 == 0 {
+		return msg
 	}
-	cursor++
 
 	canMutate := func(n int) bool {
-		if !hasEnoughData(fn.data, cursor, n+1) {
+		if !fn.hasEnoughData(n + 1) {
 			return false
 		}
 
-		allowed := (fn.data[cursor] % 2) == 0
-		cursor++
+		allowed := (fn.getBytes(1)[0] % 2) == 0
 
 		return allowed
+	}
+
+	mayBeMutate := func(mut func([]byte), size int) {
+		if !canMutate(size) {
+			return
+		}
+
+		mut(fn.getBytes(size))
 	}
 
 	switch m := msg.(type) {
@@ -436,306 +479,226 @@ func (fn *fuzzNetwork) maybeMalformMessage(msg lnwire.Message,
 		out := *m
 
 		// NodeID
-		if canMutate(33) {
-			var nodeID [33]byte
-			copy(nodeID[:], fn.data[cursor:cursor+33])
-			out.NodeID = nodeID
-			cursor += 33
-		}
+		mayBeMutate(func(b []byte) { out.NodeID = [33]byte(b) }, 33)
 
 		// Signature
-		if canMutate(64) {
-			out.Signature, _ = lnwire.NewSigFromWireECDSA(
-				fn.data[cursor : cursor+64],
-			)
-			cursor += 64
-		}
+		mayBeMutate(
+			func(b []byte) {
+				out.Signature, _ = lnwire.NewSigFromWireECDSA(b)
+			}, 64,
+		)
 
-		return &out, cursor
+		return &out
 
 	case *lnwire.ChannelAnnouncement1:
 		out := *m
 
 		// NodeID1
-		if canMutate(33) {
-			var nodeID [33]byte
-			copy(nodeID[:], fn.data[cursor:cursor+33])
-			out.NodeID1 = nodeID
-			cursor += 33
-		}
+		mayBeMutate(func(b []byte) { out.NodeID1 = [33]byte(b) }, 33)
 
 		// NodeID2
-		if canMutate(33) {
-			var nodeID [33]byte
-			copy(nodeID[:], fn.data[cursor:cursor+33])
-			out.NodeID2 = nodeID
-			cursor += 33
-		}
+		mayBeMutate(func(b []byte) { out.NodeID2 = [33]byte(b) }, 33)
 
 		// BitcoinKey1
-		if canMutate(33) {
-			var btcKey [33]byte
-			copy(btcKey[:], fn.data[cursor:cursor+33])
-			out.BitcoinKey1 = btcKey
-			cursor += 33
-		}
+		mayBeMutate(
+			func(b []byte) { out.BitcoinKey1 = [33]byte(b) }, 33,
+		)
 
 		// BitcoinKey2
-		if canMutate(33) {
-			var btcKey [33]byte
-			copy(btcKey[:], fn.data[cursor:cursor+33])
-			out.BitcoinKey2 = btcKey
-			cursor += 33
-		}
+		mayBeMutate(
+			func(b []byte) { out.BitcoinKey2 = [33]byte(b) }, 33,
+		)
 
 		// NodeSig1
-		if canMutate(64) {
-			out.NodeSig1, _ = lnwire.NewSigFromWireECDSA(
-				fn.data[cursor : cursor+64],
-			)
-			cursor += 64
-		}
+		mayBeMutate(
+			func(b []byte) {
+				out.NodeSig1, _ = lnwire.NewSigFromWireECDSA(b)
+			}, 64,
+		)
 
 		// NodeSig2
-		if canMutate(64) {
-			out.NodeSig2, _ = lnwire.NewSigFromWireECDSA(
-				fn.data[cursor : cursor+64],
-			)
-			cursor += 64
-		}
+		mayBeMutate(
+			func(b []byte) {
+				out.NodeSig2, _ = lnwire.NewSigFromWireECDSA(b)
+			}, 64,
+		)
 
 		// BitcoinSig1
-		if canMutate(64) {
-			out.BitcoinSig1, _ = lnwire.NewSigFromWireECDSA(
-				fn.data[cursor : cursor+64],
-			)
-			cursor += 64
-		}
+		mayBeMutate(
+			func(b []byte) {
+				out.BitcoinSig1, _ = lnwire.NewSigFromWireECDSA(
+					b,
+				)
+			}, 64,
+		)
 
 		// BitcoinSig2
-		if canMutate(64) {
-			out.BitcoinSig2, _ = lnwire.NewSigFromWireECDSA(
-				fn.data[cursor : cursor+64],
-			)
-			cursor += 64
-		}
+		mayBeMutate(
+			func(b []byte) {
+				out.BitcoinSig2, _ = lnwire.NewSigFromWireECDSA(
+					b,
+				)
+			}, 64,
+		)
 
 		// ChainHash
-		if canMutate(32) {
-			var cHash [32]byte
-			copy(cHash[:], fn.data[cursor:cursor+32])
-			out.ChainHash = cHash
-			cursor += 32
-		}
+		mayBeMutate(func(b []byte) { out.ChainHash = [32]byte(b) }, 32)
 
-		// ShortChannelID
-		if canMutate(8) {
-			scid := lnwire.NewShortChanIDFromInt(
-				getUint64(fn.data[cursor : cursor+8]),
-			)
-			out.ShortChannelID = scid
-			cursor += 8
-
-			// Since the peer provided a malformed SCID, the local
-			// on-chain lookups should fail.
-			fn.chain.On("GetBlockHash", int64(scid.BlockHeight)).
-				Return(nil, fmt.Errorf("block not found")).
-				Once()
-			fn.chain.On("GetBlock", tmock.Anything).
-				Return(nil, fmt.Errorf("block not found")).
-				Once()
-			fn.chain.On(
-				"GetUtxo", tmock.Anything, tmock.Anything,
-				scid.BlockHeight, tmock.Anything,
-			).Return(nil, fmt.Errorf("utxo not found")).Once()
-		}
-
-		return &out, cursor
+		return &out
 
 	case *lnwire.ChannelUpdate1:
 		out := *m
 
 		// Signature
-		if canMutate(64) {
-			out.Signature, _ = lnwire.NewSigFromWireECDSA(
-				fn.data[cursor : cursor+64],
-			)
-			cursor += 64
-		}
+		mayBeMutate(
+			func(b []byte) {
+				out.Signature, _ = lnwire.NewSigFromWireECDSA(b)
+			}, 64,
+		)
 
 		// ChainHash
-		if canMutate(32) {
-			var cHash [32]byte
-			copy(cHash[:], fn.data[cursor:cursor+32])
-			out.ChainHash = cHash
-			cursor += 32
-		}
+		mayBeMutate(func(b []byte) { out.ChainHash = [32]byte(b) }, 32)
 
-		return &out, cursor
+		// MessageFlags
+		mayBeMutate(func(b []byte) {
+			out.MessageFlags = lnwire.ChanUpdateMsgFlags(b[0])
+		}, 1)
+
+		return &out
 
 	case *lnwire.AnnounceSignatures1:
 		out := *m
 
 		// NodeSignature
-		if canMutate(64) {
-			out.NodeSignature, _ = lnwire.NewSigFromWireECDSA(
-				fn.data[cursor : cursor+64],
-			)
-			cursor += 64
-		}
+		mayBeMutate(
+			func(b []byte) {
+				out.NodeSignature, _ = lnwire.
+					NewSigFromWireECDSA(b)
+			}, 64,
+		)
 
 		// BitcoinSignature
-		if canMutate(64) {
-			out.BitcoinSignature, _ = lnwire.NewSigFromWireECDSA(
-				fn.data[cursor : cursor+64],
-			)
-			cursor += 64
-		}
+		mayBeMutate(
+			func(b []byte) {
+				out.BitcoinSignature, _ = lnwire.
+					NewSigFromWireECDSA(b)
+			}, 64,
+		)
 
-		// ShortChannelID
-		if canMutate(8) {
-			scid := lnwire.NewShortChanIDFromInt(
-				getUint64(fn.data[cursor : cursor+8]),
-			)
-			out.ShortChannelID = scid
-			cursor += 8
-		}
-
-		return &out, cursor
+		return &out
 
 	case *lnwire.QueryShortChanIDs:
 		out := *m
 
 		// ChainHash
-		if canMutate(32) {
-			var cHash [32]byte
-			copy(cHash[:], fn.data[cursor:cursor+32])
-			out.ChainHash = cHash
-			cursor += 32
-		}
+		mayBeMutate(func(b []byte) { out.ChainHash = [32]byte(b) }, 32)
 
 		// EncodingType
-		if canMutate(1) {
-			out.EncodingType = lnwire.QueryEncoding(fn.data[cursor])
-			cursor++
-		}
+		mayBeMutate(
+			func(b []byte) {
+				out.EncodingType = lnwire.QueryEncoding(b[0])
+			}, 1,
+		)
 
-		return &out, cursor
+		return &out
 
 	case *lnwire.QueryChannelRange:
 		out := *m
 
 		// ChainHash
-		if canMutate(32) {
-			var cHash [32]byte
-			copy(cHash[:], fn.data[cursor:cursor+32])
-			out.ChainHash = cHash
-			cursor += 32
-		}
+		mayBeMutate(func(b []byte) { out.ChainHash = [32]byte(b) }, 32)
 
-		// QueryOptions
-		if canMutate(1) {
-			iterations := int(fn.data[cursor])
-			var bits []lnwire.FeatureBit
-			cursor++
-
-			for range iterations {
-				if !canMutate(2) {
-					break
-				}
-
-				bits = append(bits, lnwire.FeatureBit(
-					getUint16(fn.data[cursor:cursor+2]),
-				))
-
-				cursor += 2
-			}
-
-			fv := lnwire.NewRawFeatureVector(bits...)
-			qopt := lnwire.QueryOptions(*fv)
-
-			out.QueryOptions = &qopt
-		}
-
-		return &out, cursor
+		return &out
 
 	case *lnwire.ReplyChannelRange:
 		out := *m
 
 		// ChainHash
-		if canMutate(32) {
-			var cHash [32]byte
-			copy(cHash[:], fn.data[cursor:cursor+32])
-			out.ChainHash = cHash
-			cursor += 32
-		}
+		mayBeMutate(func(b []byte) { out.ChainHash = [32]byte(b) }, 32)
 
 		// EncodingType
-		if canMutate(1) {
-			out.EncodingType = lnwire.QueryEncoding(fn.data[cursor])
-			cursor++
-		}
+		mayBeMutate(
+			func(b []byte) {
+				out.EncodingType = lnwire.QueryEncoding(b[0])
+			}, 1,
+		)
 
-		return &out, cursor
+		return &out
 
 	case *lnwire.ReplyShortChanIDsEnd:
 		out := *m
 
 		// ChainHash
-		if canMutate(32) {
-			var cHash [32]byte
-			copy(cHash[:], fn.data[cursor:cursor+32])
-			out.ChainHash = cHash
-			cursor += 32
-		}
+		mayBeMutate(func(b []byte) { out.ChainHash = [32]byte(b) }, 32)
 
-		return &out, cursor
+		return &out
 
 	case *lnwire.GossipTimestampRange:
 		out := *m
 
 		// ChainHash
-		if canMutate(32) {
-			var cHash [32]byte
-			copy(cHash[:], fn.data[cursor:cursor+32])
-			out.ChainHash = cHash
-			cursor += 32
-		}
+		mayBeMutate(func(b []byte) { out.ChainHash = [32]byte(b) }, 32)
 
-		return &out, cursor
+		return &out
 
 	default:
 		fn.t.Fatalf("received unexpected message while malformation: "+
 			"%T (type=%d)", m, m.MsgType())
 
-		return nil, cursor
+		return nil
 	}
 }
 
-// sendRemoteNodeAnnouncement creates and processes a remote node announcement.
-func (fn *fuzzNetwork) sendRemoteNodeAnnouncement(offset int) int {
-	fn.t.Helper()
+// createNodeAnnouncement builds a node announcement.
+func (fn *fuzzNetwork) createNodeAnnouncement(
+	peer *gossipPeer) *lnwire.NodeAnnouncement1 {
 
-	if !hasEnoughData(fn.data, offset, 6) {
-		return len(fn.data)
+	nodeAnn := &lnwire.NodeAnnouncement1{
+		Timestamp: getUint32(fn.getBytes(4)),
+		Alias:     lnwire.NodeAlias(fn.getBytes(32)),
+		RGBColor: color.RGBA{
+			R: fn.getBytes(1)[0],
+			G: fn.getBytes(1)[0],
+			B: fn.getBytes(1)[0],
+			A: fn.getBytes(1)[0],
+		},
+		Features:  fn.getFeatures(),
+		Addresses: fn.getAddresses(),
 	}
+	copy(nodeAnn.NodeID[:], peer.lnPrivKey.PubKey().SerializeCompressed())
 
-	peer := fn.selectPeer(fn.data[offset+1])
-	if peer == nil {
-		return offset + 1
-	}
-
-	timestamp := getUint32(fn.data[offset+2 : offset+6])
-	nodeAnn, err := createNodeAnnouncement(peer.lnPrivKey, timestamp)
+	signer := mock.SingleSigner{Privkey: peer.lnPrivKey}
+	sig, err := netann.SignAnnouncement(&signer, testKeyLoc, nodeAnn)
 	require.NoError(fn.t, err)
 
-	malformedMsg, offset := fn.maybeMalformMessage(nodeAnn, offset+6)
+	nodeAnn.Signature, err = lnwire.NewSigFromSignature(sig)
+	require.NoError(fn.t, err)
+
+	return nodeAnn
+}
+
+// sendRemoteNodeAnnouncement creates and processes a remote node announcement.
+func (fn *fuzzNetwork) sendRemoteNodeAnnouncement() {
+	if !fn.hasEnoughData(42) {
+		return
+	}
+
+	peer1 := fn.selectPeer()
+	if peer1 == nil {
+		return
+	}
+
+	peer2 := fn.selectPeer()
+	if peer2 == nil {
+		return
+	}
+
+	nodeAnn := fn.createNodeAnnouncement(peer1)
+	malformedMsg := fn.maybeMalformMessage(nodeAnn)
 
 	fn.gossiper.ProcessRemoteAnnouncement(
-		fn.t.Context(), malformedMsg, peer.connection,
+		fn.t.Context(), malformedMsg, peer2.connection,
 	)
-
-	return offset
 }
 
 // createChannelAnnouncement builds a channel announcement with node and
@@ -746,7 +709,7 @@ func (fn *fuzzNetwork) createChannelAnnouncement(peer1, peer2 *gossipPeer,
 	chanAnn := &lnwire.ChannelAnnouncement1{
 		ChainHash:      *chaincfg.MainNetParams.GenesisHash,
 		ShortChannelID: scid,
-		Features:       testFeatures,
+		Features:       fn.getFeatures(),
 	}
 
 	copy(chanAnn.NodeID1[:], peer1.lnPrivKey.PubKey().SerializeCompressed())
@@ -802,12 +765,10 @@ func (fn *fuzzNetwork) signChannelAnnouncement(peer1, peer2 *gossipPeer,
 func (fn *fuzzNetwork) setupMockChainForChannel(peer1, peer2 *gossipPeer,
 	scid lnwire.ShortChannelID) {
 
-	fn.t.Helper()
-
 	_, tx, err := input.GenFundingPkScript(
 		peer1.btcPrivKey.PubKey().SerializeCompressed(),
 		peer2.btcPrivKey.PubKey().SerializeCompressed(),
-		int64(1000),
+		10000000,
 	)
 	require.NoError(fn.t, err)
 
@@ -855,105 +816,134 @@ func (fn *fuzzNetwork) setupMockChainForChannel(peer1, peer2 *gossipPeer,
 
 // sendRemoteChannelAnnouncement creates and processes a remote channel
 // announcement.
-func (fn *fuzzNetwork) sendRemoteChannelAnnouncement(offset int) int {
-	fn.t.Helper()
-
-	if !hasEnoughData(fn.data, offset, 6) {
-		return len(fn.data)
+func (fn *fuzzNetwork) sendRemoteChannelAnnouncement() {
+	if !fn.hasEnoughData(6) {
+		return
 	}
 
-	peer1 := fn.selectPeer(fn.data[offset+1])
+	peer1 := fn.selectPeer()
 	if peer1 == nil {
-		return offset + 1
+		return
 	}
 
-	peer2 := fn.selectPeer(fn.data[offset+2])
+	peer2 := fn.selectPeer()
 	if peer2 == nil {
-		return offset + 2
+		return
 	}
 
-	bh := uint32(fn.data[offset+3])<<16 | uint32(fn.data[offset+4])<<8 |
-		uint32(fn.data[offset+5])
-	scid := lnwire.ShortChannelID{BlockHeight: bh}
-	fn.setupMockChainForChannel(peer1, peer2, scid)
+	peer3 := fn.selectPeer()
+	if peer3 == nil {
+		return
+	}
+
+	scid := fn.genUTXOLookupSCID()
 
 	chanAnn := fn.createChannelAnnouncement(peer1, peer2, scid)
 	fn.signChannelAnnouncement(peer1, peer2, chanAnn)
 
-	malformedMsg, offset := fn.maybeMalformMessage(chanAnn, offset+6)
+	malformedMsg := fn.maybeMalformMessage(chanAnn)
+
+	// We will only register the chain lookups if we have not malformed the
+	// channel announcement message, since the chain lookup happens at the
+	// end once all the fields are validated. This is done to ensure that we
+	// do not poison future messages due to an expected chain lookup that
+	// was never hit.
+	if reflect.DeepEqual(chanAnn, malformedMsg) {
+		// We conditionally allow the chain lookup to either pass or
+		// fail.
+		if fn.hasEnoughData(1) && fn.getBytes(1)[0]%2 == 0 {
+			fn.setupMockChainForChannel(peer1, peer2, scid)
+		} else {
+			// the local on-chain lookups should fail.
+			fn.chain.On("GetBlockHash", int64(scid.BlockHeight)).
+				Return(nil, fmt.Errorf("block not found")).
+				Once()
+		}
+	}
 
 	fn.gossiper.ProcessRemoteAnnouncement(
-		fn.t.Context(), malformedMsg, peer1.connection,
+		fn.t.Context(), malformedMsg, peer3.connection,
 	)
-
-	return offset
 }
 
 // sendRemoteChannelUpdate creates and processes a remote channel update.
-func (fn *fuzzNetwork) sendRemoteChannelUpdate(offset int) int {
-	fn.t.Helper()
-
-	if !hasEnoughData(fn.data, offset, 50) {
-		return len(fn.data)
+func (fn *fuzzNetwork) sendRemoteChannelUpdate() {
+	if !fn.hasEnoughData(51) {
+		return
 	}
 
-	peer := fn.selectPeer(fn.data[offset+1])
-	if peer == nil {
-		return offset + 1
+	peer1 := fn.selectPeer()
+	if peer1 == nil {
+		return
 	}
 
-	scid := lnwire.NewShortChanIDFromInt(getUint64(
-		fn.data[offset+2 : offset+10],
-	))
-	fee := lnwire.Fee{
-		FeeRate: getInt32(fn.data[offset+10 : offset+14]),
-		BaseFee: getInt32(fn.data[offset+14 : offset+18]),
+	peer2 := fn.selectPeer()
+	if peer2 == nil {
+		return
+	}
+
+	// We will conditionally, return a previously known SCID obtained from a
+	// valid channel announcement. Otherwise, generate a random SCID from
+	// fuzz input.
+	getSCID := func() lnwire.ShortChannelID {
+		if fn.getBytes(1)[0]%2 == 0 {
+			if chanID, err := fn.getKnownSCID(
+				fn.t.Context(), lnwire.GossipVersion1,
+			); err == nil {
+				return lnwire.NewShortChanIDFromInt(chanID)
+			}
+		}
+
+		return lnwire.NewShortChanIDFromInt(getUint64(fn.getBytes(8)))
 	}
 
 	updateAnn := &lnwire.ChannelUpdate1{
 		ChainHash:      *chaincfg.MainNetParams.GenesisHash,
-		ShortChannelID: scid,
-		Timestamp:      getUint32(fn.data[offset+18 : offset+22]),
-		MessageFlags:   lnwire.ChanUpdateMsgFlags(fn.data[offset+22]),
-		ChannelFlags:   lnwire.ChanUpdateChanFlags(fn.data[offset+23]),
-		TimeLockDelta:  getUint16(fn.data[offset+24 : offset+26]),
-		HtlcMinimumMsat: lnwire.MilliSatoshi(getUint64(
-			fn.data[offset+26 : offset+34],
-		)),
-		HtlcMaximumMsat: lnwire.MilliSatoshi(getUint64(
-			fn.data[offset+34 : offset+42],
-		)),
-		FeeRate: getUint32(fn.data[offset+42 : offset+46]),
-		BaseFee: getUint32(fn.data[offset+46 : offset+50]),
-		InboundFee: tlv.SomeRecordT(
-			tlv.NewRecordT[tlv.TlvType55555](fee),
-		),
+		ShortChannelID: getSCID(),
+		Timestamp:      getUint32(fn.getBytes(4)),
+		MessageFlags:   1,
+		ChannelFlags:   lnwire.ChanUpdateChanFlags(fn.getBytes(1)[0]),
+		TimeLockDelta:  getUint16(fn.getBytes(2)),
+		HtlcMinimumMsat: lnwire.MilliSatoshi(
+			getUint64(fn.getBytes(8)),
+		) % (maxFundingAmt + 1),
+		HtlcMaximumMsat: lnwire.MilliSatoshi(
+			getUint64(fn.getBytes(8)),
+		) % (maxFundingAmt + 1),
+		FeeRate: getUint32(fn.getBytes(4)),
+		BaseFee: getUint32(fn.getBytes(4)),
 	}
 
-	err := signUpdate(peer.lnPrivKey, updateAnn)
+	if fn.getBytes(1)[0]%2 == 0 {
+		fee := lnwire.Fee{
+			FeeRate: getInt32(fn.getBytes(4)),
+			BaseFee: getInt32(fn.getBytes(4)),
+		}
+		updateAnn.InboundFee = tlv.SomeRecordT(
+			tlv.NewRecordT[tlv.TlvType55555](fee),
+		)
+	}
+
+	err := signUpdate(peer1.lnPrivKey, updateAnn)
 	require.NoError(fn.t, err)
 
-	malformedMsg, offset := fn.maybeMalformMessage(updateAnn, offset+50)
+	malformedMsg := fn.maybeMalformMessage(updateAnn)
 
 	fn.gossiper.ProcessRemoteAnnouncement(
-		fn.t.Context(), malformedMsg, peer.connection,
+		fn.t.Context(), malformedMsg, peer2.connection,
 	)
-
-	return offset
 }
 
 // sendRemoteAnnounceSignatures creates and processes a remote announcement
 // signature.
-func (fn *fuzzNetwork) sendRemoteAnnounceSignatures(offset int) int {
-	fn.t.Helper()
-
-	if !hasEnoughData(fn.data, offset, 38) {
-		return len(fn.data)
+func (fn *fuzzNetwork) sendRemoteAnnounceSignatures() {
+	if !fn.hasEnoughData(36) {
+		return
 	}
 
-	peer := fn.selectPeer(fn.data[offset+1])
+	peer := fn.selectPeer()
 	if peer == nil {
-		return offset + 1
+		return
 	}
 
 	selfConn := mockPeer{fn.selfLNPrivKey.PubKey(), nil, nil, atomic.Bool{}}
@@ -963,24 +953,22 @@ func (fn *fuzzNetwork) sendRemoteAnnounceSignatures(offset int) int {
 		btcPrivKey: fn.selfBtcPrivKey,
 	}
 
-	bh := uint32(fn.data[offset+2])<<16 | uint32(fn.data[offset+3])<<8 |
-		uint32(fn.data[offset+4])
-	scid := lnwire.ShortChannelID{BlockHeight: bh}
-	var chanID [32]byte
-	copy(chanID[:], fn.data[offset+5:offset+37])
+	scid := fn.genUTXOLookupSCID()
+	chanID := [32]byte(fn.getBytes(32))
 
 	chanAnn := fn.createChannelAnnouncement(peer, self, scid)
 	fn.signChannelAnnouncement(peer, self, chanAnn)
 
 	// We will conditionally send the opposite side of the proof from our
 	// local node.
-	if fn.data[offset+37]%2 == 0 {
+	if fn.hasEnoughData(1) && fn.getBytes(1)[0]%2 == 0 {
 		// add channel to the Router's topology.
 		fn.setupMockChainForChannel(peer, self, scid)
-		select {
-		case <-fn.gossiper.ProcessLocalAnnouncement(chanAnn):
-		case <-fn.t.Context().Done():
-		}
+
+		_ = AwaitGossipResult(
+			fn.t.Context(),
+			fn.gossiper.ProcessLocalAnnouncement(chanAnn),
+		)
 
 		// Also send our local AnnounceSignatures so that when the
 		// remote peer sends theirs, both halves will be available for
@@ -991,10 +979,10 @@ func (fn *fuzzNetwork) sendRemoteAnnounceSignatures(offset int) int {
 			NodeSignature:    chanAnn.NodeSig2,
 			BitcoinSignature: chanAnn.BitcoinSig2,
 		}
-		select {
-		case <-fn.gossiper.ProcessLocalAnnouncement(annSign):
-		case <-fn.t.Context().Done():
-		}
+		_ = AwaitGossipResult(
+			fn.t.Context(),
+			fn.gossiper.ProcessLocalAnnouncement(annSign),
+		)
 	}
 
 	annSign := &lnwire.AnnounceSignatures1{
@@ -1004,44 +992,36 @@ func (fn *fuzzNetwork) sendRemoteAnnounceSignatures(offset int) int {
 		BitcoinSignature: chanAnn.BitcoinSig1,
 	}
 
-	malformedMsg, offset := fn.maybeMalformMessage(annSign, offset+38)
+	malformedMsg := fn.maybeMalformMessage(annSign)
 
 	fn.gossiper.ProcessRemoteAnnouncement(
 		fn.t.Context(), malformedMsg, peer.connection,
 	)
-
-	return offset
 }
 
 // sendRemoteQueryShortChanIDs creates and processes a remote query short
 // channel IDs request.
-func (fn *fuzzNetwork) sendRemoteQueryShortChanIDs(offset int) int {
-	fn.t.Helper()
-
-	if !hasEnoughData(fn.data, offset, 3) {
-		return len(fn.data)
+func (fn *fuzzNetwork) sendRemoteQueryShortChanIDs() {
+	if !fn.hasEnoughData(2) {
+		return
 	}
 
-	peer := fn.selectPeer(fn.data[offset+1])
+	peer := fn.selectPeer()
 	if peer == nil {
-		return offset + 1
+		return
 	}
 
 	var scidsList []lnwire.ShortChannelID
-	iterations := int(fn.data[offset+2])
-	currentOffset := offset + 3
+	iterations := fn.getBytes(1)[0]
 
 	for range iterations {
-		if !hasEnoughData(fn.data, currentOffset, 8) {
+		if !fn.hasEnoughData(8) {
 			break
 		}
 		scidsList = append(
 			scidsList,
-			lnwire.NewShortChanIDFromInt(getUint64(
-				fn.data[currentOffset:currentOffset+8],
-			)),
+			lnwire.NewShortChanIDFromInt(getUint64(fn.getBytes(8))),
 		)
-		currentOffset += 8
 	}
 
 	queryShortChanIDs := &lnwire.QueryShortChanIDs{
@@ -1049,9 +1029,7 @@ func (fn *fuzzNetwork) sendRemoteQueryShortChanIDs(offset int) int {
 		EncodingType: lnwire.EncodingSortedPlain,
 		ShortChanIDs: scidsList,
 	}
-	malformedMsg, offset := fn.maybeMalformMessage(
-		queryShortChanIDs, currentOffset,
-	)
+	malformedMsg := fn.maybeMalformMessage(queryShortChanIDs)
 
 	// Reply synchronously to peer queries to ensure they are processed
 	// even when the fuzz data ends, and to reduce goroutine dependencies
@@ -1059,32 +1037,32 @@ func (fn *fuzzNetwork) sendRemoteQueryShortChanIDs(offset int) int {
 	syncer, ok := fn.gossiper.syncMgr.GossipSyncer(peer.connection.PubKey())
 	require.True(fn.t, ok)
 	_ = syncer.replyPeerQueries(fn.t.Context(), malformedMsg)
-
-	return offset
 }
 
 // sendRemoteQueryChannelRange creates and processes a remote query channel
 // range request.
-func (fn *fuzzNetwork) sendRemoteQueryChannelRange(offset int) int {
-	fn.t.Helper()
-
-	if !hasEnoughData(fn.data, offset, 10) {
-		return len(fn.data)
+func (fn *fuzzNetwork) sendRemoteQueryChannelRange() {
+	if !fn.hasEnoughData(10) {
+		return
 	}
 
-	peer := fn.selectPeer(fn.data[offset+1])
+	peer := fn.selectPeer()
 	if peer == nil {
-		return offset + 1
+		return
 	}
 
 	queryChannelRange := &lnwire.QueryChannelRange{
 		ChainHash:        *chaincfg.MainNetParams.GenesisHash,
-		FirstBlockHeight: getUint32(fn.data[offset+2 : offset+6]),
-		NumBlocks:        getUint32(fn.data[offset+6 : offset+10]),
+		FirstBlockHeight: getUint32(fn.getBytes(4)),
+		NumBlocks:        getUint32(fn.getBytes(4)),
 	}
-	malformedMsg, offset := fn.maybeMalformMessage(
-		queryChannelRange, offset+10,
-	)
+
+	if fn.getBytes(1)[0]%2 == 0 {
+		qopt := lnwire.QueryOptions(*fn.getFeatures())
+		queryChannelRange.QueryOptions = &qopt
+	}
+
+	malformedMsg := fn.maybeMalformMessage(queryChannelRange)
 
 	// Reply synchronously to peer queries to ensure they are processed
 	// even when the fuzz data ends, and to reduce goroutine dependencies
@@ -1092,22 +1070,18 @@ func (fn *fuzzNetwork) sendRemoteQueryChannelRange(offset int) int {
 	syncer, ok := fn.gossiper.syncMgr.GossipSyncer(peer.connection.PubKey())
 	require.True(fn.t, ok)
 	_ = syncer.replyPeerQueries(fn.t.Context(), malformedMsg)
-
-	return offset
 }
 
 // sendRemoteReplyChannelRange creates and processes a remote reply channel
 // range response.
-func (fn *fuzzNetwork) sendRemoteReplyChannelRange(offset int) int {
-	fn.t.Helper()
-
-	if !hasEnoughData(fn.data, offset, 13) {
-		return len(fn.data)
+func (fn *fuzzNetwork) sendRemoteReplyChannelRange() {
+	if !fn.hasEnoughData(12) {
+		return
 	}
 
-	peer := fn.selectPeer(fn.data[offset+1])
+	peer := fn.selectPeer()
 	if peer == nil {
-		return offset + 1
+		return
 	}
 
 	// To avoid filling up the gossip buffer and hanging the fuzz tests, we
@@ -1119,49 +1093,40 @@ func (fn *fuzzNetwork) sendRemoteReplyChannelRange(offset int) int {
 	require.True(fn.t, ok)
 
 	if len(syncer.gossipMsgs)+1 >= cap(syncer.gossipMsgs) {
-		return offset + 2
+		return
 	}
 
-	firstBlockHeight := getUint32(fn.data[offset+2 : offset+6])
-	numBlocks := getUint32(fn.data[offset+6 : offset+10])
-	complete := fn.data[offset+10]
+	firstBlockHeight := getUint32(fn.getBytes(4))
+	numBlocks := getUint32(fn.getBytes(4))
+	complete := fn.getBytes(1)[0]
 
 	var scidsList []lnwire.ShortChannelID
-	var timeStamps lnwire.Timestamps
-	scidCount := int(fn.data[offset+11])
-	withTimestamp := (fn.data[offset+12] % 2) == 0
+	var timestamps lnwire.Timestamps
+	scidCount := fn.getBytes(1)[0]
+	withTimestamp := (fn.getBytes(1)[0] % 2) == 0
 
-	currentOffset := offset + 13
-	requiredOffset := 8
+	requiredLen := 8
 	if withTimestamp {
-		requiredOffset += 8
+		requiredLen += 8
 	}
 
 	for range scidCount {
-		if !hasEnoughData(fn.data, currentOffset, requiredOffset) {
+		if !fn.hasEnoughData(requiredLen) {
 			break
 		}
 
 		scidsList = append(
-			scidsList, lnwire.NewShortChanIDFromInt(getUint64(
-				fn.data[currentOffset:currentOffset+8],
-			)),
+			scidsList, lnwire.NewShortChanIDFromInt(
+				getUint64(fn.getBytes(8)),
+			),
 		)
-		currentOffset += 8
 
 		if withTimestamp {
-			timestamp1 := getUint32(
-				fn.data[currentOffset : currentOffset+4],
-			)
-			timestamp2 := getUint32(
-				fn.data[currentOffset+4 : currentOffset+8],
-			)
 			timestamp := lnwire.ChanUpdateTimestamps{
-				Timestamp1: timestamp1,
-				Timestamp2: timestamp2,
+				Timestamp1: getUint32(fn.getBytes(4)),
+				Timestamp2: getUint32(fn.getBytes(4)),
 			}
-			timeStamps = append(timeStamps, timestamp)
-			currentOffset += 8
+			timestamps = append(timestamps, timestamp)
 		}
 	}
 
@@ -1170,33 +1135,27 @@ func (fn *fuzzNetwork) sendRemoteReplyChannelRange(offset int) int {
 		FirstBlockHeight: firstBlockHeight,
 		NumBlocks:        numBlocks,
 		ShortChanIDs:     scidsList,
-		Timestamps:       timeStamps,
+		Timestamps:       timestamps,
 		Complete:         complete,
 	}
 
-	malformedMsg, offset := fn.maybeMalformMessage(
-		replyChannelRange, currentOffset,
-	)
+	malformedMsg := fn.maybeMalformMessage(replyChannelRange)
 
 	fn.gossiper.ProcessRemoteAnnouncement(
 		fn.t.Context(), malformedMsg, peer.connection,
 	)
-
-	return offset
 }
 
 // sendRemoteReplyShortChanIDsEnd creates and processes a remote reply short
 // channel IDs end.
-func (fn *fuzzNetwork) sendRemoteReplyShortChanIDsEnd(offset int) int {
-	fn.t.Helper()
-
-	if !hasEnoughData(fn.data, offset, 3) {
-		return len(fn.data)
+func (fn *fuzzNetwork) sendRemoteReplyShortChanIDsEnd() {
+	if !fn.hasEnoughData(2) {
+		return
 	}
 
-	peer := fn.selectPeer(fn.data[offset+1])
+	peer := fn.selectPeer()
 	if peer == nil {
-		return offset + 1
+		return
 	}
 
 	// To avoid filling up the gossip buffer and hanging the fuzz tests, we
@@ -1208,55 +1167,55 @@ func (fn *fuzzNetwork) sendRemoteReplyShortChanIDsEnd(offset int) int {
 	require.True(fn.t, ok)
 
 	if len(syncer.gossipMsgs)+1 >= cap(syncer.gossipMsgs) {
-		return offset + 2
+		return
 	}
 
 	replyScidEnd := lnwire.ReplyShortChanIDsEnd{
 		ChainHash: *chaincfg.MainNetParams.GenesisHash,
-		Complete:  fn.data[offset+2],
+		Complete:  fn.getBytes(1)[0],
 	}
 
-	malformedMsg, offset := fn.maybeMalformMessage(&replyScidEnd, offset+3)
+	malformedMsg := fn.maybeMalformMessage(&replyScidEnd)
 
 	fn.gossiper.ProcessRemoteAnnouncement(
 		fn.t.Context(), malformedMsg, peer.connection,
 	)
-
-	return offset
 }
 
 // sendRemoteGossipTimestampRange creates and processes a remote gossip
 // timestamp range.
-func (fn *fuzzNetwork) sendRemoteGossipTimestampRange(offset int) int {
-	fn.t.Helper()
-
-	if !hasEnoughData(fn.data, offset, 18) {
-		return len(fn.data)
+func (fn *fuzzNetwork) sendRemoteGossipTimestampRange() {
+	if !fn.hasEnoughData(19) {
+		return
 	}
 
-	peer := fn.selectPeer(fn.data[offset+1])
+	peer := fn.selectPeer()
 	if peer == nil {
-		return offset + 1
+		return
 	}
 
 	gossipTimestampRange := &lnwire.GossipTimestampRange{
 		ChainHash:      *chaincfg.MainNetParams.GenesisHash,
-		FirstTimestamp: getUint32(fn.data[offset+2 : offset+6]),
-		TimestampRange: getUint32(fn.data[offset+6 : offset+10]),
-		FirstBlockHeight: tlv.SomeRecordT(
-			tlv.NewPrimitiveRecord[tlv.TlvType2](
-				getUint32(fn.data[offset+10 : offset+14]),
-			),
-		),
-		BlockRange: tlv.SomeRecordT(
-			tlv.NewPrimitiveRecord[tlv.TlvType4](
-				getUint32(fn.data[offset+14 : offset+18]),
-			),
-		),
+		FirstTimestamp: getUint32(fn.getBytes(4)),
+		TimestampRange: getUint32(fn.getBytes(4)),
 	}
-	malformedMsg, offset := fn.maybeMalformMessage(
-		gossipTimestampRange, offset+18,
-	)
+
+	if fn.getBytes(1)[0]%2 == 0 {
+		gossipTimestampRange.FirstBlockHeight = tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType2](
+				getUint32(fn.getBytes(4)),
+			),
+		)
+	}
+
+	if fn.getBytes(1)[0]%2 == 0 {
+		gossipTimestampRange.BlockRange = tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType4](
+				getUint32(fn.getBytes(4)),
+			),
+		)
+	}
+	malformedMsg := fn.maybeMalformMessage(gossipTimestampRange)
 
 	// Reply synchronously to peer queries to ensure they are processed
 	// even when the fuzz data ends, and to reduce goroutine dependencies
@@ -1267,44 +1226,36 @@ func (fn *fuzzNetwork) sendRemoteGossipTimestampRange(offset int) int {
 	filter, ok := malformedMsg.(*lnwire.GossipTimestampRange)
 	require.True(fn.t, ok)
 	_ = syncer.ApplyGossipFilter(fn.t.Context(), filter)
-
-	return offset
 }
 
-// udpateBlockHeight updates the best known block height in the fuzz network.
+// updateBlockHeight updates the best known block height in the fuzz network.
 // The new height is selected from the fuzz data and is guaranteed to be
 // monotonically increasing.
-func (fn *fuzzNetwork) udpateBlockHeight(offset int) int {
-	fn.t.Helper()
-
+func (fn *fuzzNetwork) updateBlockHeight() {
 	// Ensure we have enough data for updating block height.
-	if !hasEnoughData(fn.data, offset, 5) {
-		return len(fn.data)
+	if !fn.hasEnoughData(4) {
+		return
 	}
 
 	*fn.blockHeight = max(
-		getInt32(fn.data[offset+1:offset+5])%(blockHeightCap+1),
+		getInt32(fn.getBytes(4))%(blockHeightCap+1),
 		*fn.blockHeight,
 	)
 	fn.notifier.notifyBlock(chainhash.Hash{}, uint32(*fn.blockHeight))
-
-	return offset + 5
 }
 
 // startHistoricalSync triggers a historical sync on a peer. This is implemented
 // as an explicit state transition so we can deterministically control when a
 // forced historical sync happens, instead of relying on time-based triggers or
 // randomly selected peers.
-func (fn *fuzzNetwork) startHistoricalSync(offset int) int {
-	fn.t.Helper()
-
-	if !hasEnoughData(fn.data, offset, 2) {
-		return len(fn.data)
+func (fn *fuzzNetwork) startHistoricalSync() {
+	if !fn.hasEnoughData(1) {
+		return
 	}
 
-	peer := fn.selectPeer(fn.data[offset+1])
+	peer := fn.selectPeer()
 	if peer == nil {
-		return offset + 1
+		return
 	}
 
 	syncer, ok := fn.gossiper.syncMgr.GossipSyncer(peer.connection.PubKey())
@@ -1328,8 +1279,6 @@ func (fn *fuzzNetwork) startHistoricalSync(offset int) int {
 		default:
 		}
 	}
-
-	return offset + 2
 }
 
 // waitForValidationSemaphore blocks until the validation semaphore is fully
@@ -1346,56 +1295,56 @@ func (fn *fuzzNetwork) waitForValidationSemaphore() {
 			return
 		default:
 		}
+
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
 // runGossipStateMachine executes the gossip state machine with fuzz input data.
 func (fn *fuzzNetwork) runGossipStateMachine() {
-	fn.t.Helper()
-
-	for offset := 0; offset < len(fn.data); {
+	for fn.hasEnoughData(1) {
 		// Extract action from current data byte
-		action := fuzzState(int(fn.data[offset]) % numFuzzStates)
+		action := fuzzState(int(fn.getBytes(1)[0]) % int(numFuzzStates))
 
 		switch action {
 		case connectPeer:
-			offset = fn.connectNewPeer(offset)
+			fn.connectNewPeer()
 
 		case disconnectPeer:
-			offset = fn.disconnectPeer(offset)
+			fn.disconnectPeer()
 
 		case nodeAnnouncementReceived:
-			offset = fn.sendRemoteNodeAnnouncement(offset)
+			fn.sendRemoteNodeAnnouncement()
 
 		case channelAnnouncementReceived:
-			offset = fn.sendRemoteChannelAnnouncement(offset)
+			fn.sendRemoteChannelAnnouncement()
 
 		case channelUpdateReceived:
-			offset = fn.sendRemoteChannelUpdate(offset)
+			fn.sendRemoteChannelUpdate()
 
 		case announcementSignaturesReceived:
-			offset = fn.sendRemoteAnnounceSignatures(offset)
+			fn.sendRemoteAnnounceSignatures()
 
 		case queryShortChanIDsReceived:
-			offset = fn.sendRemoteQueryShortChanIDs(offset)
+			fn.sendRemoteQueryShortChanIDs()
 
 		case queryChannelRangeReceived:
-			offset = fn.sendRemoteQueryChannelRange(offset)
+			fn.sendRemoteQueryChannelRange()
 
 		case replyChannelRangeReceived:
-			offset = fn.sendRemoteReplyChannelRange(offset)
+			fn.sendRemoteReplyChannelRange()
 
 		case gossipTimestampRangeReceived:
-			offset = fn.sendRemoteGossipTimestampRange(offset)
+			fn.sendRemoteGossipTimestampRange()
 
 		case replyShortChanIDsEndReceived:
-			offset = fn.sendRemoteReplyShortChanIDsEnd(offset)
+			fn.sendRemoteReplyShortChanIDsEnd()
 
-		case udpateBlockHeight:
-			offset = fn.udpateBlockHeight(offset)
+		case updateBlockHeight:
+			fn.updateBlockHeight()
 
 		case triggerHistoricalSync:
-			offset = fn.startHistoricalSync(offset)
+			fn.startHistoricalSync()
 		}
 
 		fn.waitForValidationSemaphore()
